@@ -1,0 +1,6 @@
+httpx
+psycopg[binary]
+psycopg-pool
+tenacity
+click
+python-dotenv
