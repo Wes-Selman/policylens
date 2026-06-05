@@ -1,0 +1,210 @@
+# baseline_doctrine.yaml
+# PolicyLens — Baseline Doctrine Table
+# Decided: Session 3
+# Last updated: Session 3
+#
+# Mandatory annotation aid. Every provision must be scored against the
+# baseline defined here for its sub-domain. Annotator must write one
+# sentence referencing a sub-domain entry by name before assigning valence
+# (Cross-rule D).
+#
+# This is a living document. Version date is bumped whenever a controlling
+# authority changes. Provisions scored under a prior version date are
+# flagged for re-review but not automatically re-tagged.
+#
+# If no sub-domain row applies to a provision, flag baseline:missing in the
+# provision record. Corpus maintainer adds the row before annotation proceeds.
+
+meta:
+  version_date: "2024-01-01"  # Update to corpus collection date at project start
+  notes: >
+    The Dobbs sub-domain (bodily_autonomy_abortion) is HIGH VOLATILITY.
+    Any legislative activity in this area should trigger an immediate
+    check of whether the controlling authority has changed before
+    annotation proceeds.
+
+# ── Social Liberty Axis ───────────────────────────────────────────────────────
+
+social:
+
+  privacy_informational:
+    sub_domain: privacy_informational
+    axis: social
+    baseline: >
+      No general constitutional right to informational privacy from federal
+      data collection. The Whalen framework governs constitutional claims.
+      Statutory regimes (HIPAA, Privacy Act, etc.) are the operative
+      baseline for most provisions in this sub-domain.
+    controlling_authority:
+      - "Whalen v. Roe, 429 U.S. 589 (1977)"
+      - "Paul v. Davis, 424 U.S. 693 (1974)"
+    version_date: "corpus_collection_date"
+    volatility: low
+
+  privacy_surveillance:
+    sub_domain: privacy_surveillance
+    axis: social
+    baseline: >
+      Third-party doctrine limits Fourth Amendment protection for information
+      voluntarily shared with third parties. Digital data receives heightened
+      Carpenter protection for CSLI-type persistent location surveillance;
+      warrant required for content of digital communications.
+    controlling_authority:
+      - "Katz v. United States, 389 U.S. 347 (1967)"
+      - "Smith v. Maryland, 442 U.S. 735 (1979)"
+      - "Carpenter v. United States, 585 U.S. 296 (2018)"
+    version_date: "2018"
+    volatility: medium
+    notes: >
+      Carpenter's scope is still being defined by lower courts.
+      Check for circuit developments before annotating provisions
+      involving non-CSLI digital surveillance.
+
+  speech:
+    sub_domain: speech
+    axis: social
+    baseline: >
+      Broad First Amendment protection. Content-based restrictions on speech
+      are subject to strict scrutiny and presumptively unconstitutional.
+      Commercial speech receives intermediate scrutiny under Central Hudson.
+      True threats, incitement, obscenity, and fraud are unprotected categories.
+    controlling_authority:
+      - "Brandenburg v. Ohio, 395 U.S. 444 (1969)"
+      - "Central Hudson Gas v. Public Service Comm'n, 447 U.S. 557 (1980)"
+      - "United States v. Alvarez, 567 U.S. 709 (2012)"
+    version_date: "corpus_collection_date"
+    volatility: low
+
+  religion_free_exercise:
+    sub_domain: religion_free_exercise
+    axis: social
+    baseline: >
+      Neutral, generally applicable laws do not require religious exemptions
+      and survive rational basis review. Laws that are not neutral or not
+      generally applicable trigger strict scrutiny. Post-Fulton, laws with
+      discretionary exemption systems are not generally applicable.
+    controlling_authority:
+      - "Employment Division v. Smith, 494 U.S. 872 (1990)"
+      - "Fulton v. City of Philadelphia, 593 U.S. 522 (2021)"
+    version_date: "2021"
+    volatility: medium
+    notes: >
+      Smith remains controlling but faces ongoing pressure. Check for
+      Supreme Court activity before annotating free exercise provisions.
+
+  religion_establishment:
+    sub_domain: religion_establishment
+    axis: social
+    baseline: >
+      Establishment Clause analysis uses a coercion test combined with
+      reference to historical practices and understandings. The Lemon
+      three-part test (1971) has been abandoned.
+    controlling_authority:
+      - "Kennedy v. Bremerton School District, 597 U.S. 507 (2022)"
+    version_date: "2022"
+    volatility: medium
+
+  bodily_autonomy_abortion:
+    sub_domain: bodily_autonomy_abortion
+    axis: social
+    baseline: >
+      No federal constitutional right to abortion. States may prohibit,
+      permit, or regulate abortion without constitutional constraint at
+      the federal level. State constitutional provisions vary and are
+      not captured here.
+    controlling_authority:
+      - "Dobbs v. Jackson Women's Health Organization, 597 U.S. 215 (2022)"
+    version_date: "2022"
+    volatility: HIGH
+    notes: >
+      HIGH VOLATILITY. State-level legislative activity is rapid and
+      ongoing. This sub-domain should be reviewed before each annotation
+      batch. State law provisions require separate state-law baseline
+      assessment not covered by this table.
+
+  bodily_autonomy_other:
+    sub_domain: bodily_autonomy_other
+    axis: social
+    baseline: >
+      Constitutionally protected liberty interest in refusing unwanted
+      medical treatment (Cruzan). No affirmative constitutional right
+      to receive medical care or to assisted dying. Washington v. Glucksberg
+      framework governs substantive due process claims for unenumerated rights.
+    controlling_authority:
+      - "Cruzan v. Director, Missouri Dept. of Health, 497 U.S. 261 (1990)"
+      - "Washington v. Glucksberg, 521 U.S. 702 (1997)"
+    version_date: "corpus_collection_date"
+    volatility: low
+    notes: >
+      Dobbs casts some uncertainty on the Glucksberg framework's stability
+      for other unenumerated rights. Flag provisions relying heavily on
+      substantive due process in non-abortion contexts.
+
+# ── Economic Liberty Axis ─────────────────────────────────────────────────────
+
+economic:
+
+  property_rights:
+    sub_domain: property_rights
+    axis: economic
+    baseline: >
+      Regulatory takings require compensation under the Fifth Amendment
+      only if they deny all economic value (Lucas per se rule) or constitute
+      a per se physical invasion (Loretto). All other regulatory actions
+      are evaluated under the Penn Central three-factor balancing test.
+      No Lochner-era heightened scrutiny for economic regulation.
+    controlling_authority:
+      - "Penn Central Transportation Co. v. New York City, 438 U.S. 104 (1978)"
+      - "Loretto v. Teleprompter Manhattan CATV Corp., 458 U.S. 419 (1982)"
+      - "Lucas v. South Carolina Coastal Council, 505 U.S. 1003 (1992)"
+    version_date: "corpus_collection_date"
+    volatility: low
+
+  freedom_of_contract:
+    sub_domain: freedom_of_contract
+    axis: economic
+    baseline: >
+      No Lochner-era constitutional protection for freedom of contract.
+      Economic legislation regulating contractual relationships is subject
+      only to rational basis review. The post-New Deal settlement is the
+      operative baseline.
+    controlling_authority:
+      - "West Coast Hotel Co. v. Parrish, 300 U.S. 379 (1937)"
+    version_date: "1937"
+    volatility: low
+    notes: >
+      Foundational baseline. Unlikely to shift. Any provision that
+      attempts to constitutionalize freedom of contract beyond this
+      baseline should be scored as a significant expansion (+2).
+
+  labor_relations:
+    sub_domain: labor_relations
+    axis: economic
+    baseline: >
+      NLRA framework governs private sector collective bargaining at the
+      federal level. States may enact right-to-work laws under Taft-Hartley.
+      Public sector unions have no constitutional right to agency fees
+      after Janus; cannot be compelled to fund union speech.
+    controlling_authority:
+      - "National Labor Relations Act (1935, as amended)"
+      - "Janus v. AFSCME, 585 U.S. 878 (2018)"
+    version_date: "2018"
+    volatility: medium
+
+  taxation:
+    sub_domain: taxation
+    axis: economic
+    baseline: >
+      Congress has broad taxing power under Article I. The individual
+      mandate was upheld as a valid exercise of the taxing power.
+      Tax provisions are evaluated on the economic liberty axis unless
+      the tax operates as a behavioral penalty on constitutionally
+      protected conduct, in which case domain = social.
+    controlling_authority:
+      - "NFIB v. Sebelius, 567 U.S. 519 (2012)"
+    version_date: "2012"
+    volatility: low
+    edge_case: >
+      If a tax provision appears to penalize protected conduct
+      (speech, religion, association), re-evaluate domain before scoring.
+      May warrant domain = mixed.
