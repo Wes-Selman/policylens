@@ -1,5 +1,3 @@
-# policylens
-Legislative source aggregator and provision classifier
 # PolicyLens
 
 A legislative intelligence pipeline that parses bills, executive orders, and federal rules into atomic provisions, classified across philosophical, rights, moral, and societal dimensions. Party alignment is a derived output, not an input label.
@@ -14,10 +12,10 @@ The project is built in three layers:
 Ingests legislative documents from public APIs into PostgreSQL with full-text search. CLI-first, no frontend.
 
 **Layer 2 — Text Transformation** 🔲
-Chunks documents into discrete atomic provisions, resolves internal references inline, strips boilerplate, adds lightweight semantic tags. Serves both human readability and model digestibility.
+Chunks documents into discrete atomic provisions. A provision is the minimal deontic unit: one subject, one Hohfeldian modality (duty, permission, power, immunity), one object. Chunking operates at sentence/clause level; edge cases (nested conditionals, cross-references) are resolved empirically during implementation and flagged for review rather than deferred. Populates a `provisions` table; advances document status from `raw` to `transformed`.
 
 **Layer 3 — PolicyLens Proper** 🔲
-Provision extraction and classification. Moral ontology applied as analysis layer. Party alignment derived from classification output.
+Model-primary annotation of provisions across a controlled vocabulary (domain, valence, subject_type, modality). Provisions are scored on signed ordinal liberty axes (economic, social) and projected into 2D ideological space. Party alignment is derived from clustering output, not used as a training label. Human reviewers sample-check model annotations with stratified sampling weighted toward complex provisions.
 
 ---
 
@@ -30,18 +28,29 @@ Provision extraction and classification. Moral ontology applied as analysis laye
 ---
 
 ## Project Structure
+
+```
 policylens/
 ├── docker-compose.yml
 ├── .env.example
 ├── requirements.txt
-├── policylens/
-│   ├── db/
-│   │   ├── init.py        # Connection pool
-│   │   └── schema.sql         # Table definitions and enums
-│   ├── sources/
-│   │   ├── federal_register.py
-│   │   └── congress.py
-│   └── cli.py                 # Entry point for all pipeline commands
+├── docs/
+│   ├── decisions_log.md       # Why the ontology is structured the way it is
+│   ├── project_plan.md        # Phased plan, phases 0–5
+│   └── handoffs/              # Session handoff prompts, one per session
+├── ontology/
+│   ├── provision_schema.yaml      # Full provision record schema
+│   ├── controlled_vocabulary.yaml # Enumerated values + cross-rules (load into model prompts)
+│   └── baseline_doctrine.yaml     # Constitutional baseline table per sub-domain
+└── policylens/
+    ├── db/
+    │   ├── __init__.py        # Connection pool
+    │   └── schema.sql         # Table definitions and enums
+    ├── sources/
+    │   ├── federal_register.py
+    │   └── congress.py
+    └── cli.py                 # Entry point for all pipeline commands
+```
 
 ---
 
@@ -62,7 +71,9 @@ cp .env.example .env
 ```
 
 DSN format:
+```
 postgresql://policylens:YOUR_PASSWORD@localhost:5432/policylens?gssencmode=disable
+```
 
 API key: https://api.congress.gov/sign-up/
 
@@ -122,8 +133,8 @@ documents (
 
 The `status` column is the handoff contract between layers:
 - Layer 1 writes `raw`
-- Layer 2 queries for `raw`, processes, advances to `transformed`
-- Layer 3 queries for `transformed`, advances to `classified`
+- Layer 2 queries for `raw`, chunks into provisions, advances to `transformed`
+- Layer 3 queries for `transformed`, annotates provisions, advances to `classified`
 
 ---
 
@@ -140,10 +151,12 @@ The `status` column is the handoff contract between layers:
 
 ---
 
-## Next Up — Layer 2
+## Ontology
 
-Design decisions to make before starting:
-- Chunking strategy: sentence boundary vs. section boundary vs. provision boundary
-- How to handle XML structure from Federal Register vs. Congress.gov differently
-- Reference resolution approach: inline expansion vs. linked provision graph
-- Semantic tag vocabulary: define the ontology before tagging begins
+The ontology lives in `ontology/`. Three files:
+
+- `provision_schema.yaml` — every field on a provision record, its type, allowed values, and constraints
+- `controlled_vocabulary.yaml` — enumerated value definitions and cross-rules; designed to load directly into model annotation prompts
+- `baseline_doctrine.yaml` — per-sub-domain constitutional baseline table used to anchor valence scoring; versioned by controlling authority date
+
+Design decisions and rationale are in `docs/decisions_log.md`.
