@@ -1,0 +1,264 @@
+# controlled_vocabulary.yaml
+# PolicyLens — Controlled Vocabulary
+# Decided: Sessions 1–3
+# Last updated: Session 3
+#
+# This file defines the allowed values and definitions for all enumerated fields
+# in the provision schema. Designed to be loaded directly into model annotation
+# prompts as a reference layer.
+
+# ── domain ────────────────────────────────────────────────────────────────────
+# Routes a provision to the correct liberty axis for valence scoring.
+# Decided: Session 2
+
+domain:
+  description: >
+    Identifies the liberty domain of the provision and routes it to the
+    correct axis for scoring. Domain determines axis; ideology does not
+    (Cross-rule C). Score the liberty effect, not the policy desirability.
+  values:
+    economic:
+      definition: >
+        Market transactions, property, contracts, employment, taxation,
+        business regulation.
+      routes_to: economic_liberty_axis
+      edge_cases:
+        - Taxation provisions default to economic unless operating as
+          behavioral penalties on protected conduct (e.g. a tax that only
+          applies when exercising a constitutional right → social).
+    social:
+      definition: >
+        Personal conduct, family, religion, speech, bodily autonomy,
+        private non-commercial association.
+      routes_to: social_liberty_axis
+    civil_procedural:
+      definition: >
+        Procedural rights in legal proceedings — due process, search and
+        seizure, right to counsel.
+      routes_to: social_liberty_axis (procedural sub-axis)
+    governmental_structure:
+      definition: >
+        Powers, duties, or organization of government actors with no direct
+        liberty effect on private parties.
+      routes_to: neither_axis
+      notes: Excluded from axis projection and clustering.
+    mixed:
+      definition: >
+        Co-equal economic and social liberty effects that cannot be
+        disaggregated. Requires dual scoring (valence_economic +
+        valence_social).
+      routes_to: both_axes
+      edge_cases:
+        - Anti-discrimination provisions default to mixed.
+    pending:
+      definition: >
+        Domain cannot be determined without a finalized downstream rule
+        or unresolved cross-reference object.
+      routes_to: neither_axis
+      notes: >
+        Excluded from clustering runs. Every pending provision must carry
+        pending_reason and (if awaiting_rulemaking) pending_monitor fields.
+        Re-tagged when triggering rule is finalized — not at NPRM stage.
+
+# ── valence ───────────────────────────────────────────────────────────────────
+# Signed ordinal liberty effect score. Decided: Session 2
+
+valence:
+  description: >
+    Signed ordinal score representing the liberty effect of a provision
+    on the routed axis. Scored from the perspective of the primary subject
+    identified in subject_type. Range: −2 to +2.
+  scale:
+    "+2":
+      meaning: >
+        Strong liberty expansion — removes a significant restriction,
+        grants a significant entitlement, or prohibits government from
+        imposing a burden.
+    "+1":
+      meaning: >
+        Moderate expansion — narrows an existing restriction or grants
+        a minor new liberty.
+    "0":
+      meaning: >
+        Neutral, procedural, or no net liberty effect on the routed axis.
+    "-1":
+      meaning: >
+        Moderate contraction — imposes a new duty, restriction, or
+        qualification on the primary subject.
+    "-2":
+      meaning: >
+        Strong contraction — eliminates an existing liberty, imposes a
+        significant new burden, or criminalizes conduct.
+
+  cross_rules:
+    A_subject_inversion: >
+      A duty imposed on government is a liberty expansion for the subject
+      class it protects. Score from the perspective of the primary subject
+      as identified in subject_type — which in this case is the protected
+      class, not the government actor.
+    B_modality_determines_direction: >
+      Permission valence is always >= 0.
+      Prohibition / duty valence is always <= 0.
+      Consult modality before assigning valence direction.
+    C_domain_determines_axis: >
+      Score the liberty effect, not the policy desirability.
+      A provision expanding a liberty you consider harmful still scores
+      positive on that axis.
+    D_baseline_anchoring: >
+      Before scoring, write one sentence stating the baseline legal state.
+      Reference a sub-domain row in baseline_doctrine.yaml by name.
+      If the baseline cannot be articulated, consult the doctrine table
+      before proceeding. If no row applies, flag baseline:missing.
+
+# ── subject_type ──────────────────────────────────────────────────────────────
+# Whose liberty the valence score measures. Decided: Session 2
+
+subject_type:
+  description: >
+    Identifies the primary subject whose liberty the valence score measures.
+    When Cross-rule A applies (duty on government), subject_type is the
+    protected class, not the government actor.
+  values:
+    individual_natural:
+      definition: Natural person in a private, non-commercial capacity.
+    individual_commercial:
+      definition: Natural person acting as an economic agent.
+    corporation:
+      definition: Legally incorporated entity or unincorporated business.
+    government_federal:
+      definition: Federal agencies, officers, or the United States as a party.
+    government_state:
+      definition: State or local government entities.
+    government_any:
+      definition: All government entities without distinction.
+    mixed:
+      definition: >
+        Multiple subject classes that cannot be cleanly separated into
+        a single primary subject.
+
+# ── modality ──────────────────────────────────────────────────────────────────
+# Hohfeldian modality type. Decided: Session 2
+# Four correlatives deferred to second annotation pass.
+
+modality:
+  description: >
+    Hohfeldian modality assigned to the provision's subject with respect
+    to the provision's object. Primary set only — four correlatives
+    (disability, liability, no_right, right_claim) deferred to second
+    annotation pass, derivable from primary set.
+  values:
+    duty:
+      hohfeldian_term: Duty
+      definition: Subject is required to do or refrain from doing X.
+      valence_constraint: "valence <= 0 (Cross-rule B)"
+    permission:
+      hohfeldian_term: Privilege / Liberty
+      definition: Subject is permitted to do X without obligation.
+      valence_constraint: "valence >= 0 (Cross-rule B)"
+    power:
+      hohfeldian_term: Power
+      definition: Subject can alter legal relations.
+      valence_constraint: context-dependent; assess liberty effect directly
+    immunity:
+      hohfeldian_term: Immunity
+      definition: >
+        Subject's legal position cannot be altered by a specified actor.
+      valence_constraint: typically >= 0; assess liberty effect directly
+    complex:
+      hohfeldian_term: "(catch-all)"
+      definition: >
+        Provision bundles multiple Hohfeldian relations inseparably and
+        cannot be reduced to a single primary modality type.
+      notes: >
+        Use sparingly. If modality = complex, flag for adjudicator review.
+        A complex provision that can be split into valid atomic triples
+        should be split at chunking time, not tagged complex.
+
+# ── object_class ──────────────────────────────────────────────────────────────
+# Preliminary taxonomy of what the provision's object operates on.
+# Decided: Session 2 (preliminary — extensible)
+
+object_class:
+  description: >
+    Classifies the object of the provision's deontic operation.
+    Preliminary taxonomy — expected to be extended as the corpus
+    is processed.
+  values:
+    conduct:
+      definition: An action or omission by the subject.
+    resource:
+      definition: A physical or financial asset.
+    information:
+      definition: Data, records, disclosures, or communications.
+    status:
+      definition: A legal status or classification (e.g. citizenship, licensure).
+    relation:
+      definition: A legal relationship between parties.
+    proceeding:
+      definition: A legal or administrative process.
+
+# ── chunk_flag ────────────────────────────────────────────────────────────────
+# Set by the chunker. Decided: Session 3 (implicit in chunker strategy)
+
+chunk_flag:
+  description: >
+    Indicates whether the chunker resolved the provision boundary
+    without ambiguity, or whether human review is needed.
+  values:
+    clean:
+      definition: Chunker resolved boundary without ambiguity.
+    review_nested_conditional:
+      definition: >
+        Provision contains nested conditionals. Chunker applied the
+        2-layer collapse rule but flagged for human confirmation.
+        Triggered automatically when condition_stack depth > 2.
+    review_cross_reference:
+      definition: >
+        Provision's object is defined by cross-reference; domain-tagging
+        may require resolving the external definition.
+    review_boundary:
+      definition: >
+        Chunker could not confidently assign a provision boundary.
+        Human reviewer determines whether to split, merge, or accept.
+
+# ── pending_reason ────────────────────────────────────────────────────────────
+
+pending_reason:
+  description: Required when domain = pending.
+  values:
+    awaiting_rulemaking:
+      definition: >
+        Provision delegates to agency rulemaking; domain cannot be
+        determined until the final rule is published.
+      re_tag_trigger: Publication of final rule in the Federal Register.
+    unresolved_object_ref:
+      definition: >
+        Provision's object is defined by cross-reference and domain
+        cannot be determined without reading the external definition.
+      re_tag_trigger: Manual resolution by corpus maintainer.
+
+# ── annotation_method ─────────────────────────────────────────────────────────
+
+annotation_method:
+  description: How the provision's normative and scoring fields were populated.
+  values:
+    model:
+      definition: Model-primary annotation; not yet sample-checked.
+    human:
+      definition: Annotated directly by a human reviewer.
+    model_human_reviewed:
+      definition: >
+        Model annotation confirmed or corrected by a human sample-checker.
+
+# ── sample_check_result ───────────────────────────────────────────────────────
+
+sample_check_result:
+  description: Result of human sample-check review.
+  values:
+    confirmed:
+      definition: Human agreed with all model annotation fields.
+    corrected:
+      definition: Human corrected one or more annotation fields.
+    escalated:
+      definition: >
+        Human could not resolve disagreement; flagged for adjudicator.

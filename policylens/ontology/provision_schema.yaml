@@ -1,0 +1,262 @@
+# provision_schema.yaml
+# PolicyLens — Provision Record Schema
+# Decided: Sessions 0–3
+# Last updated: Session 3
+#
+# A provision is a single deontic proposition of the form <subject, modality, object>
+# — the minimal unit that assigns exactly one Hohfeldian modality to exactly one subject
+# with respect to exactly one object of legal operation.
+
+provision:
+
+  # ── Structural fields (always populated at chunking time) ──────────────────
+
+  id:
+    type: string
+    format: "doc_id:section_id:provision_index"
+    description: >
+      Unique stable identifier for this provision record.
+      Constructed at chunking time and never reassigned.
+    required: true
+
+  doc_id:
+    type: string
+    description: Identifier of the source document in the corpus.
+    required: true
+
+  section_id:
+    type: string
+    description: >
+      Section or subsection reference as it appears in the source document
+      (e.g. "Sec. 12(b)(2)"). Used for display and traceability.
+    required: true
+
+  provision_index:
+    type: integer
+    description: >
+      Ordinal position of this provision within its section.
+      Zero-indexed. Used to reconstruct reading order.
+    required: true
+
+  text:
+    type: string
+    description: >
+      Raw provision text as extracted from the source document.
+      No normalization applied. Whitespace preserved.
+    required: true
+
+  doc_type:
+    type: string
+    enum: [legislation, regulation, agency_guidance, other]
+    description: Type of source document.
+    required: true
+
+  condition_stack:
+    type: array
+    items:
+      type: object
+      properties:
+        condition_type:
+          type: string
+          enum: [threshold, existence, temporal, other]
+        text:
+          type: string
+          description: Natural language statement of the condition.
+      required: [condition_type, text]
+    description: >
+      Ordered list of antecedent conditions scoping this provision.
+      Empty array if the provision is unconditional.
+      Populated at chunking time for nested conditionals.
+      Schema decision: structured objects (not plain strings) to allow
+      condition-type querying in later analysis phases.
+    required: false
+    default: []
+
+  object_ref:
+    type: object
+    description: >
+      If the provision's object is defined by cross-reference to an external statute,
+      record the reference here. The cross-reference is the object specification;
+      the external definition is not inlined.
+    properties:
+      statute:
+        type: string
+        description: "e.g. '26 U.S.C.'"
+      section:
+        type: string
+        description: "e.g. '§ 7701'"
+    required: false
+
+  chunk_flag:
+    type: string
+    enum: [clean, review_nested_conditional, review_cross_reference, review_boundary]
+    description: >
+      Flag set by the chunker when a provision requires human review
+      of its boundary. 'clean' means the chunker resolved the boundary
+      without ambiguity. All non-clean provisions are included in the
+      corpus but surfaced to reviewers in the front-end.
+    required: true
+    default: clean
+
+  # ── Normative fields (populated at annotation time) ────────────────────────
+
+  modality:
+    type: string
+    enum: [duty, permission, power, immunity, complex]
+    description: >
+      Hohfeldian modality type. Primary set only; four correlatives
+      (disability, liability, no_right, right_claim) deferred to second
+      annotation pass post-pilot.
+    required: false
+
+  object_class:
+    type: string
+    enum: [conduct, resource, information, status, relation, proceeding]
+    description: Preliminary taxonomy of what the provision's object operates on.
+    required: false
+
+  # ── Rights/scoring fields (populated at annotation time) ───────────────────
+
+  domain:
+    type: string
+    enum: [economic, social, civil_procedural, governmental_structure, mixed, pending]
+    description: >
+      Routes the provision to the correct liberty axis for valence scoring.
+      'pending' used when domain cannot be determined without a finalized
+      downstream rule or unresolved cross-reference object.
+    required: false
+
+  pending_reason:
+    type: string
+    enum: [awaiting_rulemaking, unresolved_object_ref]
+    description: >
+      Required when domain = 'pending'. Specifies why tagging is deferred.
+    required: false  # required if domain = pending
+
+  pending_monitor:
+    type: object
+    description: >
+      Required when pending_reason = 'awaiting_rulemaking'.
+      Enables corpus maintainer to track when re-tagging is triggered.
+    properties:
+      agency:
+        type: string
+      docket_id_or_cfr_section:
+        type: string
+    required: false
+
+  valence:
+    type: integer
+    minimum: -2
+    maximum: 2
+    description: >
+      Signed ordinal liberty effect score on the routed axis.
+      Used when domain is a single axis (economic, social, civil_procedural).
+      See controlled_vocabulary.yaml for score definitions and cross-rules.
+      Not populated when domain = mixed, governmental_structure, or pending.
+    required: false
+
+  valence_economic:
+    type: integer
+    minimum: -2
+    maximum: 2
+    description: >
+      Economic axis valence score. Populated only when domain = mixed.
+    required: false  # required if domain = mixed
+
+  valence_social:
+    type: integer
+    minimum: -2
+    maximum: 2
+    description: >
+      Social axis valence score. Populated only when domain = mixed.
+    required: false  # required if domain = mixed
+
+  subject_type:
+    type: string
+    enum:
+      - individual_natural
+      - individual_commercial
+      - corporation
+      - government_federal
+      - government_state
+      - government_any
+      - mixed
+    description: >
+      Whose liberty the valence score measures. Score is always taken
+      from the perspective of the primary subject identified here.
+      Cross-rule A: a duty imposed on government is a liberty expansion
+      for the subject class it protects — subject_type in that case is
+      the protected class, not the government.
+    required: false
+
+  baseline_statement:
+    type: string
+    description: >
+      One-sentence annotator statement of the baseline legal state
+      before this provision operates. Required by Cross-rule D.
+      Must reference a sub-domain row in baseline_doctrine.yaml by name.
+      Populated at annotation time; included in provision record for
+      auditability and sample-check review.
+    required: false
+
+  # ── Annotation provenance fields ───────────────────────────────────────────
+
+  annotation_method:
+    type: string
+    enum: [model, human, model_human_reviewed]
+    description: >
+      How this provision was annotated.
+      'model': model-primary annotation, not yet sample-checked.
+      'human': annotated directly by a human reviewer.
+      'model_human_reviewed': model annotation confirmed or corrected
+      by a human sample-checker.
+    required: false
+
+  annotation_version:
+    type: string
+    description: >
+      Version string of the prompt or rubric used to produce this annotation.
+      Allows batch re-annotation when the rubric changes.
+    required: false
+
+  sample_check_flag:
+    type: boolean
+    description: >
+      True if this provision was selected for human sample-checking.
+      Stratified sampling oversamples structurally complex and
+      domain-ambiguous provisions — not random.
+    required: false
+    default: false
+
+  sample_check_result:
+    type: string
+    enum: [confirmed, corrected, escalated]
+    description: >
+      Result of human sample-check review.
+      'confirmed': human agreed with model annotation.
+      'corrected': human corrected one or more fields.
+      'escalated': human could not resolve; flagged for adjudicator.
+    required: false
+
+  doctrine_version_date:
+    type: string
+    format: date
+    description: >
+      Version date of the baseline_doctrine.yaml table used at annotation time.
+      Provisions scored under a prior version date are flagged for re-review
+      when the doctrine table is updated.
+    required: false
+
+# ── Constraint notes (enforced at validation layer, not schema layer) ─────────
+#
+# 1. If domain = mixed:    valence_economic AND valence_social are required;
+#                          valence must be absent.
+# 2. If domain = pending:  pending_reason is required; valence fields must be absent.
+#                          Provision is excluded from clustering runs.
+# 3. If domain = governmental_structure:
+#                          valence fields must be absent.
+#                          Provision is excluded from axis projection.
+# 4. Permission modality:  valence must be >= 0  (Cross-rule B)
+#    Prohibition/duty:     valence must be <= 0  (Cross-rule B)
+# 5. condition_stack depth > 2: chunk_flag must be set to review_nested_conditional.
