@@ -15,7 +15,7 @@ training gate.
 **Sequencing:** Chunking first. Annotation fields are not populated at
 chunking time. The taxonomy exists and is fully specified; it is not
 needed until Phase 3 (Annotation). The project is currently in Phase 1
-(Chunk & Store).
+(Chunk & Store), Layer 2a (Extraction).
 
 **Edge cases:** Handled empirically during chunker implementation as they
 surface in the corpus, not deferred to a separate scheduled effort.
@@ -27,6 +27,14 @@ Layer 2 is split into Layer 2a (extraction, source-specific) and Layer 2b
 (normalization, source-agnostic) with a persisted intermediate table
 (extracted_units). New source = new extractor file. Normalizer is never
 touched for new sources.
+
+**Session sequencing (decided Session 5 planning):**
+Session 5 covers DDL + extraction only. Normalization is Session 6.
+Rationale: the normalizer's heuristics (atomicity test, boilerplate
+detection, condition_stack construction) should be designed against real
+extracted_units output, not hypothetical output. Inspecting extraction
+results before writing the normalizer is strictly better than designing
+both in the abstract.
 
 **Artifacts in repo:**
 - provision_schema.yaml — full provision record schema (updated Session 4)
@@ -178,54 +186,194 @@ by effective_date; supersession chain visible.
 
 ---
 
-## Session 5 Primary Agenda
+## Decisions Log — Session 5 Planning
 
-### 1. DDL — four new tables + enum extension
-Write and apply:
-- ALTER TYPE doc_status ADD VALUE 'extracted' (between raw and transformed)
-- CREATE TABLE extracted_units
-- CREATE TABLE provisions
-- CREATE TABLE legal_addresses
-- CREATE TABLE provision_references
-Include all UNIQUE constraints, FK constraints, and indexes.
-Verify with \d in psql.
+**DECIDED: Session 5 scoped to DDL + extraction only**
+Normalization moved to Session 6.
 
-### 2. ExtractedUnit dataclass and extractor interface
-Write policylens/chunker/types.py — ExtractedUnit dataclass.
-Write policylens/extractors/base.py — BaseExtractor abstract class.
-Fields needed on ExtractedUnit: source_doc_id, source_schema,
-raw_text, section_path, legal_address (nullable raw citation string),
-element_type, nesting_depth, source_element_id, extraction_notes.
+Rationale: the normalizer's heuristics (atomicity test, boilerplate
+detection, condition_stack construction) are semantic judgments that
+should be designed against real extracted_units output. Running extraction
+first and inspecting results before writing the normalizer produces better
+heuristics and catches extractor design problems before they propagate
+into the provision table. The architectural split between 2a and 2b exists
+precisely to support this workflow.
 
-### 3. FRPresdocuExtractor
-Implement policylens/extractors/fr_presdocu.py.
-Handle: EXECORD, PROCLA, PRNOTICE, DETERM subtypes.
-Section boundary detection: <FP> containing <E T="04">.
-Sub-paragraph detection: regex on leading text ^\([a-z0-9]+\).
-Boilerplate tag stripping: PRTPAGE, GPH, PSIG, PLACE, DATE, FRDOC,
-FILED, BILCOD, TITLE3, PRES.
-Preamble detection: opening formula paragraphs → element_type:preamble.
-Test against EO 14407 and at least one proclamation.
-
-### 4. USLMExtractor
-Implement policylens/extractors/uslm.py.
-Walk <section> → <subsection> → <paragraph> hierarchy.
-section_id from <enum> values joined hierarchically (e.g. "§ 1(a)").
-Preserve source_element_id from id attribute on section elements.
-Test against 119-S-31 (bill) and 119-SRES-7 (resolution).
-
-### 5. Wire CLI
-Add chunk-extract and chunk-normalize commands to cli.py.
-chunk-extract: queries for status='raw', dispatches to correct extractor
-  by source field, writes extracted_units, advances to status='extracted'.
-chunk-normalize: queries for status='extracted', runs normalizer,
-  writes provisions + legal_addresses + provision_references,
-  advances to status='transformed'.
-Both commands idempotent.
+**OPEN: Normalizer atomicity heuristic**
+Deferred to Session 6. Will be decided after inspecting real
+extracted_units output from the corpus. Candidate approach documented
+in Session 6 handoff for review at session start.
 
 ---
 
-## Deferred (not Session 5)
+## Session 5 Primary Agenda
+
+### 1. DDL — four new tables + enum extension
+
+Write and apply to the live database:
+
+```sql
+-- Must run outside a transaction or with AUTOCOMMIT
+ALTER TYPE doc_status ADD VALUE 'extracted' AFTER 'raw';
+
+CREATE TABLE extracted_units ( ... );
+CREATE TABLE provisions ( ... );
+CREATE TABLE legal_addresses ( ... );
+CREATE TABLE provision_references ( ... );
+```
+
+Include all UNIQUE constraints, FK constraints, and indexes listed in
+the DB engineer notes below. Verify with \d in psql after applying.
+
+**Additional indexes beyond handoff spec (add now):**
+- provisions(doc_id, provision_index) — Mode A reading order queries
+- provisions(chunk_flag) — review queue queries
+- provisions(element_type) — boilerplate exclusion filter
+
+**DB engineer note on legal_addresses upsert:**
+ON CONFLICT DO NOTHING does not return the existing id on conflict.
+Use: INSERT ... ON CONFLICT (statute, section) DO UPDATE SET statute =
+EXCLUDED.statute RETURNING id — this always returns the id regardless
+of whether insert or conflict path was taken.
+
+**DB engineer note on section_id separator:**
+The provisions primary key format is doc_id:section_id:provision_index.
+Use | as separator (not colon) to avoid ambiguity if section_id ever
+contains a colon. Enforce in the id constructor in types.py.
+
+### 2. ExtractedUnit dataclass
+File: policylens/chunker/types.py
+
+Fields:
+- source_doc_id: int
+- source_schema: str  — 'fr_presdocu' | 'uslm'
+- raw_text: str
+- section_path: list[str]  — hierarchy as extracted, e.g. ['Sec. 2', '(b)']
+- legal_address_raw: str | None  — raw citation string if extractable
+- element_type: str  — 'provision_candidate' | 'preamble' | 'header'
+- nesting_depth: int
+- source_element_id: str  — XML id attribute or derived deterministic key
+- extraction_notes: list[str]
+
+Note: element_type 'boilerplate' is assigned by the normalizer, not
+the extractor. Extractors produce 'provision_candidate', 'preamble',
+or 'header' only.
+
+### 3. BaseExtractor interface
+File: policylens/extractors/base.py
+
+Abstract class with:
+- __init__(self, doc: dict) — doc is a row from the documents table
+- extract(self) -> list[ExtractedUnit]
+- source_schema property (abstract) -> str
+
+### 4. FRPresdocuExtractor
+File: policylens/extractors/fr_presdocu.py
+
+Handle: EXECORD, PROCLA, PRNOTICE, DETERM subtypes (detect from child
+element tag under <PRESDOCU>).
+
+Section boundary detection:
+- <FP> containing an <E T="04"> child = new section
+- Section number: text of the <E T="04"> element
+- Section heading: text of the <E T="03"> element in the same <FP>,
+  if present
+
+Sub-paragraph detection:
+- <P> or <FP SOURCE="FP1"> elements whose text begins with ^\([a-z0-9]+\)
+- Sub-paragraph label extracted as part of section_path
+
+Preamble detection:
+- Opening <FP> elements before the first section boundary that contain
+  the formula "By the authority vested in me" or "by virtue of the
+  authority vested in me" → element_type: preamble
+
+Boilerplate tag stripping (strip before text extraction):
+PRTPAGE, GPH, PSIG, PLACE, DATE, FRDOC, FILED, BILCOD, TITLE3, PRES
+
+source_element_id derivation:
+- Use XML id attribute if present; otherwise derive as
+  {subtype}:{section_path_joined}:{paragraph_index}
+
+Test targets: EO 14407 (2026-11180), at least one proclamation (2026-09506).
+
+### 5. USLMExtractor
+File: policylens/extractors/uslm.py
+
+Walk hierarchy: <legis-body> → <section> → <subsection> → <paragraph>
+(and deeper if present: <subparagraph>, <clause>).
+
+For each node at any level that has a <text> child:
+- section_path: list of <enum> text values from root to this node
+  e.g. ['1.', '(a)'] for section 1, subsection (a)
+- source_element_id: id attribute on the node (always present on
+  <section>/<subsection>; derive for deeper levels if absent)
+- element_type: 'provision_candidate' for all <text>-bearing nodes
+- header: <header> child of <section> → element_type: 'header'
+
+Preamble: <legis-body> may have introductory text before the first
+<section>; if present, tag element_type: preamble.
+
+Test targets: 119-S-31 (bill), 119-SRES-7 (resolution).
+
+### 6. CLI — chunk-extract command
+Add to policylens/cli.py:
+
+```
+python3 -m policylens.cli chunk-extract [--doc-id N]
+```
+
+Behavior:
+- Without --doc-id: queries all documents with status='raw'
+- With --doc-id: processes single document (useful for testing)
+- Dispatches to correct extractor based on source field:
+  'federal_register' → FRPresdocuExtractor
+  'congress' → USLMExtractor
+- Writes extracted_units rows (ON CONFLICT DO NOTHING)
+- Advances document status to 'extracted'
+- Idempotent: re-running on an already-extracted document is a no-op
+
+Output: per-document summary (doc_id, doc_type, units extracted,
+element_type breakdown). Final summary: total documents processed,
+total extracted_units written, any errors.
+
+### 7. Corpus run + inspection
+After chunk-extract runs successfully on all 120 documents:
+
+Run this inspection query and record results in the handoff:
+```sql
+SELECT
+    source_schema,
+    element_type,
+    COUNT(*) as count,
+    AVG(nesting_depth) as avg_depth,
+    MAX(nesting_depth) as max_depth,
+    COUNT(*) FILTER (WHERE legal_address_raw IS NOT NULL) as with_citation
+FROM extracted_units
+GROUP BY source_schema, element_type
+ORDER BY source_schema, element_type;
+```
+
+Also record: total extracted_units, distribution by doc_type, any
+documents that errored during extraction. This output seeds Session 6's
+normalizer design.
+
+---
+
+## Deferred to Session 6 (Normalization)
+
+- Normalizer atomicity heuristic design (after inspecting extraction output)
+- policylens/chunker/normalize.py
+- CLI chunk-normalize command
+- context_text construction (including preamble query pattern)
+- condition_stack detection and encoding
+- chunk_flag assignment logic
+- provision_references population
+- Chunking report generation
+
+---
+
+## Deferred (not Sessions 5 or 6)
 
 - Post-pilot adjudication model
 - Front-end scope (Phase 2) — technology and hosting decisions
@@ -236,6 +384,10 @@ Both commands idempotent.
 - k-means parameter selection
 - pgvector extension installation (Phase 3/4)
 - Temporal field population (effective_date, superseded_by) — opportunistic
+- **Security/legal scoping session** — required before Phase 2 (front-end)
+  begins. Scope: user data storage, API terms of use (Congress.gov,
+  Federal Register), advertising data flows, threat model for a civic
+  tech tool that scores legislation ideologically.
 
 ---
 
@@ -248,3 +400,12 @@ Both commands idempotent.
   agenda before the session closes.
 - The handoff document is the single source of truth. Anything not in
   the handoff did not happen.
+- **Implementation review:** before any implementation decision, evaluate
+  from the perspectives of data engineer, product manager, data scientist,
+  UX, and user journey. Assess feasibility and testability explicitly.
+- **Incremental test suite:** after each implementation change, write
+  tests before moving to the next task. Tests are never deferred to end
+  of session or end of phase.
+- **Security and legal:** a standing consideration at every session.
+  Flag anything that touches user data, external API terms, or public
+  exposure before implementation proceeds.
