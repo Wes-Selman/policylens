@@ -1,0 +1,68 @@
+[
+  {
+    "source": "federal_register",
+    "doc_type": "executive_order",
+    "raw_format": "xml",
+    "total": 5,
+    "null_text": 0,
+    "errors": 0,
+    "avg_chars": 10215,
+    "min_chars": 6293,
+    "max_chars": 17402
+  },
+  {
+    "source": "federal_register",
+    "doc_type": "presidential_proclamation",
+    "raw_format": "xml",
+    "total": 8,
+    "null_text": 0,
+    "errors": 0,
+    "avg_chars": 8256,
+    "min_chars": 2987,
+    "max_chars": 28298
+  },
+  {
+    "source": "federal_register",
+    "doc_type": "notice",
+    "raw_format": "xml",
+    "total": 5,
+    "null_text": 0,
+    "errors": 0,
+    "avg_chars": 2700,
+    "min_chars": 2307,
+    "max_chars": 3477
+  },
+  {
+    "source": "federal_register",
+    "doc_type": "other",
+    "raw_format": "xml",
+    "total": 2,
+    "null_text": 0,
+    "errors": 0,
+    "avg_chars": 3309,
+    "min_chars": 2272,
+    "max_chars": 4345
+  },
+  {
+    "source": "congress",
+    "doc_type": "bill",
+    "raw_format": "xml",
+    "total": 36,
+    "null_text": 0,
+    "errors": 0,
+    "avg_chars": 11496,
+    "min_chars": 2494,
+    "max_chars": 71702
+  },
+  {
+    "source": "congress",
+    "doc_type": "resolution",
+    "raw_format": "xml",
+    "total": 64,
+    "null_text": 0,
+    "errors": 0,
+    "avg_chars": 8253,
+    "min_chars": 1835,
+    "max_chars": 205833
+  }
+]
