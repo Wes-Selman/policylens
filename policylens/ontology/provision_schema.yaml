@@ -1,11 +1,19 @@
 # provision_schema.yaml
 # PolicyLens — Provision Record Schema
-# Decided: Sessions 0–3
-# Last updated: Session 3
+# Decided: Sessions 0–4
+# Last updated: Session 4
 #
 # A provision is a single deontic proposition of the form <subject, modality, object>
 # — the minimal unit that assigns exactly one Hohfeldian modality to exactly one subject
 # with respect to exactly one object of legal operation.
+#
+# Session 4 changes:
+# - object_ref removed as embedded struct; cross-references are now stored in the
+#   provision_references junction table (provision → legal_addresses). See decisions_log.md.
+# - Added: context_text, legal_address_id, effective_date, superseded_by (temporal chain),
+#   extracted_unit_id (lineage FK to extracted_units table).
+# - These fields support RAG embedding, knowledge graph promotion, and point-in-time
+#   legislative state queries respectively.
 
 provision:
 
@@ -24,11 +32,24 @@ provision:
     description: Identifier of the source document in the corpus.
     required: true
 
+  extracted_unit_id:
+    type: integer
+    description: >
+      Foreign key to the extracted_units table. Records which ExtractedUnit(s)
+      this provision was normalized from. Provides full lineage from provision
+      back to raw source document. Usually 1:1; M:1 when the normalizer merges
+      two adjacent extracted units into a single provision.
+    required: true
+
   section_id:
     type: string
     description: >
       Section or subsection reference as it appears in the source document
-      (e.g. "Sec. 12(b)(2)"). Used for display and traceability.
+      (e.g. "Sec. 12(b)(2)" or "§ 1(a)"). Human-readable. Used for display,
+      traceability, and construction of deep links to source documents.
+      For USLM sources, derived from <enum> elements in the section hierarchy.
+      For FR sources, derived from <E T="04"> section markers and sub-paragraph
+      text prefixes.
     required: true
 
   provision_index:
@@ -45,10 +66,38 @@ provision:
       No normalization applied. Whitespace preserved.
     required: true
 
+  context_text:
+    type: string
+    description: >
+      Denormalized context-enriched string constructed by the normalizer at
+      storage time. Used as the input to vector embedding for semantic search
+      (RAG). Combines document title, doc type, section heading, condition_stack
+      summary, and provision text into a single interpretable string.
+      Example format:
+        "[Executive Order 14407 — Sec. 2: Updating the Childhood Vaccine Schedule]
+         Text: The CDC and ACIP shall review the scientific assessment..."
+      Stored separately from text so raw_text is always the unmodified source.
+      Regenerated when section metadata changes; does not change when annotation
+      fields change.
+    required: true
+
+  section_heading:
+    type: string
+    description: >
+      Heading of the section containing this provision, as extracted from the
+      source document. Denormalized onto the provision record for display and
+      context_text construction. Nullable for documents without section headings.
+    required: false
+
   doc_type:
     type: string
-    enum: [legislation, regulation, agency_guidance, other]
-    description: Type of source document.
+    enum: [legislation, regulation, agency_guidance, executive_order,
+           presidential_proclamation, presidential_memorandum, resolution,
+           notice, determination, other]
+    description: >
+      Type of source document. Extended in Session 4 to distinguish FR
+      document subtypes that were previously collapsed into 'other'.
+      Used in context_text construction and UX display.
     required: true
 
   condition_stack:
@@ -72,21 +121,6 @@ provision:
     required: false
     default: []
 
-  object_ref:
-    type: object
-    description: >
-      If the provision's object is defined by cross-reference to an external statute,
-      record the reference here. The cross-reference is the object specification;
-      the external definition is not inlined.
-    properties:
-      statute:
-        type: string
-        description: "e.g. '26 U.S.C.'"
-      section:
-        type: string
-        description: "e.g. '§ 7701'"
-    required: false
-
   chunk_flag:
     type: string
     enum: [clean, review_nested_conditional, review_cross_reference, review_boundary]
@@ -97,6 +131,66 @@ provision:
       corpus but surfaced to reviewers in the front-end.
     required: true
     default: clean
+
+  element_type:
+    type: string
+    enum: [provision_candidate, boilerplate, preamble, header]
+    description: >
+      Classification assigned by the normalizer during chunking.
+      'provision_candidate' — substantive deontic content; proceeds to annotation.
+      'boilerplate' — formulaic language (e.g. EO Sec. 3 General Provisions);
+        included in corpus, tagged domain:governmental_structure at annotation,
+        excluded from ideological clustering but visible in document-reading UX.
+      'preamble' — opening formula (e.g. "By the authority vested in me...");
+        tagged by extractor, excluded from provision records but retained
+        in context_text construction for sibling provisions.
+      'header' — section title without deontic content.
+      Note: preamble units are not stored as provision records; they are
+      retained in extracted_units and referenced for context only.
+    required: true
+    default: provision_candidate
+
+  # ── Temporal / versioning fields (nullable at Phase 1; load-bearing later) ─
+
+  legal_address_id:
+    type: integer
+    description: >
+      Foreign key to the legal_addresses table. Identifies the legal location
+      this provision directly operates on — e.g. a USC citation, CFR section,
+      or EO number that this provision amends, enacts, or is codified as.
+      Nullable: populated when the legal address is determinable from the
+      document structure or citation. Not the same as object_ref (cross-reference
+      to an external definition); this is the provision's own legal home.
+      Powers Mode C UX (temporal traversal by legal address).
+    required: false
+
+  effective_date:
+    type: string
+    format: date
+    description: >
+      Date on which this version of the provision became legally operative.
+      Nullable: populated when determinable from the source document or
+      from the enactment/publication record. For FR documents, typically
+      the publication date. For enacted legislation, the effective date
+      specified in the bill or the enactment date.
+    required: false
+
+  superseded_by:
+    type: integer
+    description: >
+      Foreign key (self-referential) to the provision record that supersedes
+      this one. Null if this provision is the current version or if no
+      superseding provision has been identified. Together with effective_date,
+      forms the version chain for point-in-time queries.
+    required: false
+
+  superseded_date:
+    type: string
+    format: date
+    description: >
+      Date on which this provision was superseded. Null if current.
+      Populated when superseded_by is set.
+    required: false
 
   # ── Normative fields (populated at annotation time) ────────────────────────
 
@@ -131,6 +225,8 @@ provision:
     enum: [awaiting_rulemaking, unresolved_object_ref]
     description: >
       Required when domain = 'pending'. Specifies why tagging is deferred.
+      'unresolved_object_ref' now refers to an unresolved row in
+      provision_references, not an embedded object_ref field.
     required: false  # required if domain = pending
 
   pending_monitor:
@@ -205,12 +301,6 @@ provision:
   annotation_method:
     type: string
     enum: [model, human, model_human_reviewed]
-    description: >
-      How this provision was annotated.
-      'model': model-primary annotation, not yet sample-checked.
-      'human': annotated directly by a human reviewer.
-      'model_human_reviewed': model annotation confirmed or corrected
-      by a human sample-checker.
     required: false
 
   annotation_version:
@@ -222,21 +312,12 @@ provision:
 
   sample_check_flag:
     type: boolean
-    description: >
-      True if this provision was selected for human sample-checking.
-      Stratified sampling oversamples structurally complex and
-      domain-ambiguous provisions — not random.
-    required: false
     default: false
+    required: false
 
   sample_check_result:
     type: string
     enum: [confirmed, corrected, escalated]
-    description: >
-      Result of human sample-check review.
-      'confirmed': human agreed with model annotation.
-      'corrected': human corrected one or more fields.
-      'escalated': human could not resolve; flagged for adjudicator.
     required: false
 
   doctrine_version_date:
@@ -244,9 +325,18 @@ provision:
     format: date
     description: >
       Version date of the baseline_doctrine.yaml table used at annotation time.
-      Provisions scored under a prior version date are flagged for re-review
-      when the doctrine table is updated.
     required: false
+
+# ── Cross-reference implementation note ──────────────────────────────────────
+#
+# object_ref (Sessions 0–3) has been replaced by the provision_references
+# junction table. Cross-references are stored as:
+#   provision_references(provision_id, legal_address_id, ref_type)
+# where ref_type values include: amends | references | implements | supersedes
+#
+# This makes LegalAddress a first-class entity (legal_addresses table) rather
+# than a JSON blob, enabling graph promotion without a schema migration.
+# See decisions_log.md — Session 4: Legal Address Architecture.
 
 # ── Constraint notes (enforced at validation layer, not schema layer) ─────────
 #
@@ -260,3 +350,8 @@ provision:
 # 4. Permission modality:  valence must be >= 0  (Cross-rule B)
 #    Prohibition/duty:     valence must be <= 0  (Cross-rule B)
 # 5. condition_stack depth > 2: chunk_flag must be set to review_nested_conditional.
+# 6. element_type = boilerplate or preamble: excluded from clustering and
+#    ideological visualization but included in corpus statistics and
+#    document-reading UX.
+# 7. superseded_by set: superseded_date must also be set.
+# 8. effective_date and superseded_date must satisfy: effective_date <= superseded_date.

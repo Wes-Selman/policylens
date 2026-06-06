@@ -242,3 +242,216 @@ conditions cluster differently in the ideological space — a question that
 may be worth asking once the corpus is annotated. The marginal complexity
 of adding condition_type at schema-definition time is low; retrofitting
 it onto 120 annotated documents is expensive.
+
+---
+
+## Session 4: Pipeline Architecture — Extractor/Normalizer Split
+
+**Decision:** Layer 2 is split into two sub-stages:
+- Layer 2a: Extractor — source-schema-specific, produces ExtractedUnit records
+- Layer 2b: Normalizer — source-agnostic, produces provision records from
+  ExtractedUnit records
+
+**Why split rather than a single chunker?**
+The corpus already contains two distinct XML schemas (FR PRESDOCU and
+Congressional USLM). Future sources (eCFR, state legislatures, historical
+Congress pre-USLM, court opinions) will add more. A monolithic chunker
+with format-specific branches requires surgery on shared code for every
+new source. The split means a new source = a new extractor file that
+implements a common interface. The normalizer is never touched.
+
+**Why not collapse to a single parser-per-source with no shared normalizer?**
+The normalization logic — atomicity test, condition_stack detection,
+chunk_flag assignment, context_text construction, temporal field
+population — is source-agnostic. Duplicating it across per-source parsers
+creates divergence risk and makes rubric changes expensive (N files to
+update instead of one).
+
+---
+
+## Session 4: ExtractedUnit as Persisted Intermediate
+
+**Decision:** ExtractedUnit records are stored in an extracted_units table,
+not held in memory and discarded after normalization.
+
+**Why persist?**
+Three reasons: (1) Reprocessing isolation — if the normalizer logic
+changes (new chunk_flag heuristic, new boilerplate detection rule), the
+extractor does not need to re-run; the normalizer re-processes from stored
+extracted_units. (2) Debugging — when a provision has a bad boundary,
+the extracted_unit record shows exactly what the extractor produced before
+normalization decisions were applied. (3) Lineage — the extracted_unit_id
+FK on provisions completes the chain: provision → extracted_unit → document
+→ raw API response.
+
+**Storage cost?**
+Negligible. At 120 documents averaging ~10k chars each, the full
+extracted_units table is well under 10MB. At 10k documents it remains
+under 1GB — trivial for Postgres.
+
+---
+
+## Session 4: LegalAddress as First-Class Entity
+
+**Decision:** legal_addresses is a standalone table. object_ref (the
+embedded JSON struct from Sessions 0–3) is replaced by a provision_references
+junction table with a ref_type column.
+
+**Why not keep object_ref as an embedded struct?**
+The embedded struct buries LegalAddress as a blob. Every unique (statute,
+section) pair that appears across provisions is a separate blob with no
+shared identity. This means: (a) you cannot query "all provisions that
+reference 26 U.S.C. § 7701" without a JSON text search; (b) graph
+promotion requires a migration to extract the blobs into nodes; (c) there
+is no deduplication — the same legal address appears N times as N separate
+blobs.
+
+**Why a junction table with ref_type?**
+A provision can stand in multiple relationships to legal addresses:
+it may AMEND one section, REFERENCE another as a definition, and
+IMPLEMENT a third as its statutory authority. A junction table with
+ref_type captures all of these as typed edges, which are the natural
+representation in both relational and graph models. Graph promotion
+becomes a query or materialized view, not a migration.
+
+**ref_type values:** amends | references | implements | supersedes | enacts
+
+---
+
+## Session 4: context_text Field
+
+**Decision:** Each provision record stores a context_text field
+constructed by the normalizer at storage time. This is the input to
+vector embedding for semantic search, not the raw provision text.
+
+**Why not embed raw text?**
+Many provisions are uninterpretable in isolation. "The Secretary shall
+ensure compliance with subsection (a)(2)(B)" embedded as a vector carries
+no useful semantic signal without knowing which Secretary, which document,
+and what subsection (a)(2)(B) says. The embedding should be on a string
+that includes enough context for the vector to carry meaning.
+
+**What goes into context_text?**
+Document title, doc type, section heading, condition_stack summary (if
+any), and provision text. Example:
+  "[Executive Order 14407 — Sec. 2: Updating the Childhood Vaccine Schedule]
+   Text: The CDC and ACIP shall review the scientific assessment..."
+
+**Why store it rather than generate at embedding time?**
+Storing it makes the embedding input auditable and stable. If context_text
+is generated on-the-fly at embedding time, embedding quality depends on
+whatever generation logic runs at that moment — a silent source of
+embedding drift. Stored context_text is versioned implicitly by the
+provision record's update timestamp.
+
+**When does context_text change?**
+When structural metadata changes (section heading renamed, document title
+corrected). It does not change when annotation fields change. This means
+embeddings remain valid across annotation passes, which is the common
+case.
+
+---
+
+## Session 4: Temporal Fields (effective_date, superseded_by)
+
+**Decision:** Four temporal fields added to provisions, all nullable:
+legal_address_id, effective_date, superseded_by (self-referential FK),
+superseded_date.
+
+**Why now rather than when temporal navigation is implemented?**
+Schema migrations on a populated provisions table are expensive. Adding
+nullable columns now costs nothing and preserves the option to populate
+them incrementally as data supports it. The alternative — adding them
+later — requires a migration after potentially thousands of provisions
+are stored, plus a backfill pass.
+
+**What does the version chain look like?**
+Each provision record represents one version of a legal text at a legal
+address. superseded_by points to the provision record that replaced it.
+effective_date and superseded_date define the window during which that
+version was operative. Point-in-time queries are: SELECT * FROM provisions
+WHERE legal_address_id = X AND effective_date <= :date AND
+(superseded_date IS NULL OR superseded_date > :date).
+
+**When are these fields populated?**
+Not in Phase 1. They are populated as temporal data becomes available —
+either from document metadata (FR publication dates, enactment dates)
+or from explicit amendment tracking in later corpus expansion.
+
+---
+
+## Session 4: Boilerplate Classification
+
+**Decision:** Two categories of non-substantive text, handled differently.
+
+Preamble ("By the authority vested in me..."): tagged element_type:preamble
+by the extractor. Not stored as a provision record. Retained in
+extracted_units and available for context_text construction for sibling
+provisions in the same document.
+
+General Provisions boilerplate (EO Sec. 3: "This order is not intended to
+create any right or benefit..."): tagged element_type:boilerplate by the
+normalizer. Stored as a provision record. Tagged domain:governmental_structure
+at annotation. Excluded from ideological clustering. Visible in
+document-reading UX (Mode A) but excluded from search and temporal
+traversal (Modes B and C).
+
+**Why the asymmetry?**
+Preamble is not a provision — it has no deontic content. Storing it as a
+provision record would inflate provision counts and introduce zero-content
+records into the annotation pipeline. General Provisions boilerplate IS
+a provision (it assigns immunities and limitations) — it just happens to
+be formulaic. Stripping it would silently omit real legal content.
+Classification, not omission.
+
+**Why does boilerplate detection belong to the normalizer, not the extractor?**
+What counts as boilerplate is a semantic judgment about legal content, not
+a structural observation about XML tags. The extractor sees structure; the
+normalizer sees meaning. Keeping semantic judgments in the normalizer
+means the extractor can be swapped without re-litigating boilerplate rules.
+
+---
+
+## Session 4: doc_status Enum Extension
+
+**Decision:** Add 'extracted' as an intermediate status between 'raw'
+and 'transformed' in the doc_status enum.
+
+**Status flow:**
+raw → extracted → transformed → classified → error
+
+raw:        Layer 1 complete; document in documents table; no extracted_units
+extracted:  Layer 2a complete; extracted_units populated; provisions not yet written
+transformed: Layer 2b complete; provisions populated; annotation fields empty
+classified: Layer 3 complete; annotation fields populated
+
+**Why a separate 'extracted' status?**
+Without it, a document that has been extracted but not yet normalized has
+no distinguishable status. If the normalizer crashes mid-run, there is no
+way to identify documents that need normalization without re-running
+extraction. The 'extracted' status makes the reprocessing boundary
+explicit and idempotent re-runs safe.
+
+---
+
+## Session 4: Pipeline Idempotency
+
+**Decision:** Every pipeline stage must be safely re-runnable against
+documents already at the target status. Re-running is a no-op or a safe
+overwrite, never a duplication or corruption.
+
+**Implementation requirements:**
+- extracted_units: UNIQUE constraint on (doc_id, source_element_id);
+  INSERT ... ON CONFLICT DO NOTHING or DO UPDATE
+- provisions: UNIQUE constraint on (doc_id, section_id, provision_index);
+  INSERT ... ON CONFLICT DO NOTHING or DO UPDATE
+- provision_references: UNIQUE constraint on (provision_id, legal_address_id,
+  ref_type); INSERT ... ON CONFLICT DO NOTHING
+- legal_addresses: UNIQUE constraint on (statute, section);
+  INSERT ... ON CONFLICT DO NOTHING, return existing id
+
+**Why?**
+Pipelines fail. Network errors, process kills, schema bugs. An idempotent
+pipeline can be re-run from any checkpoint without manual cleanup. This
+is especially important once the corpus grows beyond 120 documents where
+manual recovery becomes infeasible.

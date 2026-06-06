@@ -40,6 +40,7 @@ policylens/
 ├── docs/
 │   ├── decisions_log.md           # Why the system is structured the way it is
 │   ├── project_plan.md            # Phased plan, phases 0–5
+│   ├── interpretation_notes.md    # Working notes seeding future user-facing training docs
 │   └── handoffs/                  # Session handoff prompts, one per session
 ├── ontology/
 │   ├── provision_schema.yaml      # Full provision record schema
