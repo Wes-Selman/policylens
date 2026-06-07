@@ -1,6 +1,6 @@
 # project_plan.md
 # PolicyLens — Project Plan
-# Last updated: Session 4
+# Last updated: Session 5
 
 ---
 
@@ -70,7 +70,7 @@ Artifacts:
 - controlled_vocabulary.yaml
 - baseline_doctrine.yaml
 - decisions_log.md (rationale layer)
-- Session handoff documents (Sessions 0–4)
+- Session handoff documents (Sessions 0–5)
 
 ---
 
@@ -83,17 +83,20 @@ with structural metadata, and surface ambiguous chunk boundaries for review.
 
 Layer 2 is split into two sub-stages with a persisted intermediate:
 
-**Layer 2a — Extraction** (source-specific)
+**Layer 2a — Extraction** ✅ Complete (Session 5)
 One extractor per source schema, each implementing a common interface.
 Produces ExtractedUnit records stored in the extracted_units table.
-Current extractors needed:
+Dispatch via `policylens/extractors/registry.py`.
+
+Implemented extractors:
 - FRPresdocuExtractor — handles Federal Register PRESDOCU XML
   (EXECORD, PROCLA, PRNOTICE, DETERM subtypes)
 - USLMExtractor — handles Congressional USLM XML (bills, resolutions)
 
-New source = new extractor file. Normalizer is never touched.
+New source = new extractor file + one line in registry.py. Normalizer
+and CLI are never touched.
 
-**Layer 2b — Normalization** (source-agnostic)
+**Layer 2b — Normalization** 🔄 In Progress (Session 6)
 Reads extracted_units, applies atomicity test, detects nesting,
 constructs context_text, assigns chunk_flag, writes provision records.
 Also writes to legal_addresses and provision_references as citations
@@ -113,21 +116,24 @@ doc_status enum extended: raw → extracted → transformed → classified → e
 
 ### Tasks
 
-- Write DDL for extracted_units, provisions, legal_addresses,
+- ✅ Write DDL for extracted_units, provisions, legal_addresses,
   provision_references; extend doc_status enum
-- Define ExtractedUnit dataclass (policylens/chunker/types.py)
-- Define extractor interface (policylens/extractors/base.py)
-- Implement FRPresdocuExtractor (policylens/extractors/fr_presdocu.py)
-- Implement USLMExtractor (policylens/extractors/uslm.py)
-- Implement normalizer (policylens/chunker/normalize.py)
-- Wire CLI commands: chunk-extract, chunk-normalize (or combined chunk)
-- Apply atomicity test: can this unit be split into two valid
+- ✅ Define ExtractedUnit dataclass (policylens/chunker/types.py)
+- ✅ Define extractor interface (policylens/extractors/base.py)
+- ✅ Define extractor dispatch registry (policylens/extractors/registry.py)
+- ✅ Implement FRPresdocuExtractor (policylens/extractors/fr_presdocu.py)
+- ✅ Implement USLMExtractor (policylens/extractors/uslm.py)
+- ✅ Wire CLI command: chunk-extract
+- ✅ Write extractor test suite (41 tests, no DB required)
+- 🔄 Implement normalizer (policylens/chunker/normalize.py)
+- 🔄 Wire CLI command: chunk-normalize
+- 🔄 Apply atomicity test: can this unit be split into two valid
   〈subject, modality, object〉 triples without loss of meaning?
-- Detect and encode nested conditionals → condition_stack
-- Detect cross-reference objects → provision_references rows
-- Construct context_text for each provision (for future embedding)
-- Set chunk_flag for provisions requiring human boundary review
-- Generate chunking report: total provisions, by doc_type, chunk_flag
+- 🔄 Detect and encode nested conditionals → condition_stack
+- 🔄 Detect cross-reference objects → provision_references rows
+- 🔄 Construct context_text for each provision (for future embedding)
+- 🔄 Set chunk_flag for provisions requiring human boundary review
+- 🔄 Generate chunking report: total provisions, by doc_type, chunk_flag
   distribution, condition_stack depth distribution, element_type breakdown
 
 ### Success criteria
@@ -155,6 +161,11 @@ population is opportunistic, not required for Phase 1 completion)
 
 **Goal:** A working interface that lets users navigate the chunked corpus,
 read provision text in context, and search by keyword or structural filter.
+
+**Gate:** Requires dedicated security/legal scoping session before this
+phase begins. Scope: user data storage, API terms of use (Congress.gov,
+Federal Register), advertising data flows, threat model for a civic tech
+tool that scores legislation ideologically.
 
 Features:
 - Mode A: Provision browser — navigate by document → section → provision;
@@ -272,3 +283,5 @@ Success criteria:
 - Post-pilot adjudication model for full corpus scale-up
 - k-means parameter selection
 - Clustering sensitivity analysis (mixed-provision centroid distortion)
+- Refactor db/__init__.py: replace global pool singleton with explicit
+  create_pool(dsn) factory (flagged Session 5; needed before Phase 2)

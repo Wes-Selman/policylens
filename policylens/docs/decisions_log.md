@@ -455,3 +455,161 @@ Pipelines fail. Network errors, process kills, schema bugs. An idempotent
 pipeline can be re-run from any checkpoint without manual cleanup. This
 is especially important once the corpus grows beyond 120 documents where
 manual recovery becomes infeasible.
+---
+
+## Session 5: Extractor Dispatch Registry
+
+**Decision:** Extractor dispatch lives in `policylens/extractors/registry.py`
+as a standalone module, not inline in `cli.py`.
+
+**Why a separate registry module?**
+Putting dispatch logic in `cli.py` creates a hard dependency: testing
+dispatch requires importing the full CLI, which pulls in the DB connection
+pool and API clients. With a standalone registry, dispatch tests run
+without a database or API keys — the registry module has no such
+dependencies. This is the standard plugin registry pattern (Open/Closed
+Principle): the system is open to extension (new source = new extractor
+file + one line in registry.py) but closed to modification (cli.py and
+normalize.py are never touched when sources are added).
+
+**How to add a new source:**
+1. Create `policylens/extractors/new_source.py` implementing `BaseExtractor`.
+2. Add one line to `registry.py`: `register("new_source", NewSourceExtractor)`.
+Done. No other files change.
+
+---
+
+## Session 5: Deferred psycopg Import in db/__init__.py
+
+**Decision:** The `psycopg_pool` import in `db/__init__.py` is deferred
+inside `get_pool()` rather than executed at module load time.
+
+**Why defer?**
+The original implementation imported `ConnectionPool` at module load, which
+required libpq (the PostgreSQL client library) to be present at import time.
+This made any test that imported from `policylens.db.*` fail in environments
+without a database client installed. Deferring the import to `get_pool()`
+means the module can be imported freely; the DB dependency is only
+instantiated when a connection is actually requested.
+
+**Known limitation:**
+This is a workaround for a deeper smell: `get_pool()` maintains a global
+singleton `_pool`, which is a concurrency hazard in any async context and
+makes dependency injection in tests unnecessarily indirect. The cleaner
+long-term solution is an explicit `create_pool(dsn)` factory instantiated
+by the CLI entry point, with the pool passed down explicitly. This should
+be addressed before Phase 2 when the front-end introduces its own lifecycle
+management needs.
+
+---
+
+## Session 5: element_type Assignment Boundary
+
+**Decision:** Extractors may only assign `element_type` values from the set
+`{provision_candidate, preamble, header}`. The value `boilerplate` may only
+be assigned by the normalizer.
+
+**Why enforce this at the type level?**
+Boilerplate detection is a semantic judgment (does this text have deontic
+content?), not a structural observation (is this element inside a `<PROCLA>`
+tag?). Extractors only see XML structure; they cannot reliably make semantic
+judgments. If an extractor assigned `boilerplate`, swapping the extractor
+for a new version would require re-litigating boilerplate rules in the new
+extractor — defeating the purpose of the normalizer having sole
+responsibility. The `EXTRACTOR_ELEMENT_TYPES` frozenset in `types.py` and
+the `validate()` method enforce this boundary programmatically, catching
+violations before they reach the database.
+
+---
+
+## Session 5: Provision ID Separator
+
+**Decision:** The provision primary key format is
+`{doc_id}|{section_id}|{provision_index}`. Pipe character (`|`) used as
+separator, not colon.
+
+**Why not colon?**
+Section IDs derived from legislative text can contain colons (e.g.
+`Sec. 3: General Provisions` or citation-style references). A colon
+separator would make the ID ambiguous to parse. Pipe is not a character
+that appears in legislative section notation.
+
+---
+
+## Session 5: Proclamations Produce Zero Provisions (Expected)
+
+**Observation from corpus run:** All 8 presidential proclamations in the
+corpus extracted as preamble-only (118 preamble units, 0 provision_candidate
+units for fr_presdocu as a whole — with the 109 provision_candidates coming
+entirely from EOs and notices).
+
+**Decision:** This is correct behavior, not a bug. No normalizer adjustment
+required for proclamations.
+
+**Why proclamations have no provisions:**
+A provision is defined as a deontic proposition — a statement that assigns
+a duty, permission, power, or immunity to a subject. Proclamations are
+declaratory speech acts: "I hereby proclaim May 8 as Victory Day for World
+War II." This sentence does not obligate or empower anyone. It performs a
+declaration. There is no 〈subject, modality, object〉 triple to extract
+because there is no modality — no one is being told to do anything, permitted
+to do anything, or given any power or immunity.
+
+**User-facing implication:**
+In Mode A (document reading), a user navigating to a proclamation will see
+the full text displayed as context/preamble with a clear indication that no
+deontic provisions were identified. This is informative, not a failure state.
+It correctly communicates something about the nature of the document that a
+user might not otherwise know: proclamations are ceremonial and declaratory;
+executive orders are directive. The distinction is meaningful to anyone
+trying to understand what the President's office actually did versus what it
+announced.
+
+**Documents that DO have provisions in the FR corpus:**
+Executive orders (all extracted provision_candidates: EOs 14407, the two
+unnamed EOs, and the immigration EO). Notices (the CAR national emergency
+continuation contains the operative clause "I am continuing for 1 year the
+national emergency" — a genuine exercise of executive power under the
+National Emergencies Act). Presidential determinations (the Iran petroleum
+determination contains a operative finding with legal effect).
+
+**What this means for corpus statistics:**
+When reporting provision counts, the proclamation zero-provision outcome
+must be explicitly noted, not silently omitted. A corpus overview that
+reports "N provisions from M documents" without noting that 8 of those
+documents contributed zero provisions would be misleading about the
+distribution of deontic content across document types.
+
+---
+
+## Session 5: Bare Noun Phrase List Items (Corpus Inspection Finding)
+
+**Observation:** Corpus inspection of depth-6 USLM extracted_units (bill
+119-S-23) revealed units whose entire raw_text is a bare noun phrase —
+e.g. "the Defense Intelligence Agency;" — with no finite verb, no
+modality marker, and no self-contained legal meaning.
+
+**Decision:** These units are correctly extracted (the XML has a <text>
+element at that hierarchy level) but are semantically incomplete. They
+are list items whose operative obligation lives in a parent provision
+several levels up. The normalizer must detect and flag them as
+chunk_flag = 'review_boundary'. No auto-merge or auto-split.
+
+**Heuristic:** A unit is a bare list-item fragment if its raw_text
+contains no finite verb AND is under approximately 15 words. This is
+an auditable structural signal, not a semantic judgment.
+
+**Why not auto-merge with the parent?**
+Auto-merging would require the normalizer to traverse the section
+hierarchy upward to find the operative parent — complex logic that
+introduces its own boundary errors. The safer approach is to flag and
+surface for human review. The reviewer can confirm the parent-child
+relationship and decide whether to merge, keep separate with a
+provision_reference edge, or annotate the fragment as a sub-item of
+the parent.
+
+**User-facing implication:**
+Mode A must display bare list-item fragments with sufficient parent
+context (section heading + parent provision text) so the fragment is
+interpretable. A provision card showing only "the Defense Intelligence
+Agency;" with no context is not useful. See interpretation_notes.md.

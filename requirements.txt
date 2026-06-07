@@ -1,4 +1,5 @@
 httpx
+lxml
 psycopg[binary]
 psycopg-pool
 tenacity

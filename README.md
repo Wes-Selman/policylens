@@ -11,7 +11,7 @@ The project is built in three layers, with Layer 2 split into two sub-stages:
 **Layer 1 — Raw Source Aggregator** ✅
 Ingests legislative documents from public APIs into PostgreSQL with full-text search. CLI-first, no frontend.
 
-**Layer 2a — Extraction** 🔄
+**Layer 2a — Extraction** ✅
 Source-specific extractors parse raw XML into a structured intermediate representation (`ExtractedUnit`). Each source schema has its own extractor that implements a common interface. New source = new extractor file; the normalizer is never touched. Current extractors: `FRPresdocuExtractor` (Federal Register PRESDOCU XML), `USLMExtractor` (Congressional USLM XML). Extracted units are persisted in the `extracted_units` table — the reprocessing boundary between raw documents and normalized provisions.
 
 **Layer 2b — Normalization** 🔄
@@ -26,7 +26,7 @@ Model-primary annotation of provisions across a controlled vocabulary (domain, v
 
 - **Language:** Python 3.9+
 - **Database:** PostgreSQL 16 (Docker)
-- **Key libraries:** httpx, psycopg, psycopg-pool, tenacity, click, python-dotenv, lxml
+- **Key libraries:** httpx, lxml, psycopg, psycopg-pool, tenacity, click, python-dotenv
 
 ---
 
@@ -46,20 +46,26 @@ policylens/
 │   ├── provision_schema.yaml      # Full provision record schema
 │   ├── controlled_vocabulary.yaml # Enumerated values + cross-rules
 │   └── baseline_doctrine.yaml     # Constitutional baseline table per sub-domain
+├── tests/
+│   ├── test_extractors.py         # Extractor unit tests (32 tests, no DB required)
+│   └── test_cli_dispatch.py       # Dispatch and persistence tests (9 tests, no DB required)
 └── policylens/
     ├── db/
-    │   ├── __init__.py            # Connection pool
-    │   └── schema.sql             # Table definitions and enums
+    │   ├── __init__.py            # Connection pool (get_pool)
+    │   ├── schema.sql             # Layer 1 table definitions and enums
+    │   ├── migrate_session5.sql   # Session 5 migration: 4 new tables + enum extension
+    │   └── extracted_units.py     # DB persistence helpers for extraction pipeline
     ├── sources/
     │   ├── federal_register.py    # FR API client
     │   └── congress.py            # Congress.gov API client
     ├── extractors/
-    │   ├── base.py                # BaseExtractor interface
+    │   ├── base.py                # BaseExtractor abstract interface
+    │   ├── registry.py            # Extractor dispatch registry (get_extractor)
     │   ├── fr_presdocu.py         # Federal Register PRESDOCU XML extractor
     │   └── uslm.py                # Congressional USLM XML extractor
     ├── chunker/
     │   ├── types.py               # ExtractedUnit dataclass
-    │   └── normalize.py           # Source-agnostic normalizer
+    │   └── normalize.py           # Source-agnostic normalizer (Session 6)
     └── cli.py                     # Entry point for all pipeline commands
 ```
 
@@ -93,6 +99,12 @@ API key: https://api.congress.gov/sign-up/
 docker compose up -d
 ```
 
+**4. Apply the Session 5 migration**
+```bash
+# ALTER TYPE ADD VALUE cannot run inside a transaction; use psql directly
+psql $POSTGRES_DSN -f policylens/db/migrate_session5.sql
+```
+
 ---
 
 ## CLI Commands
@@ -118,14 +130,21 @@ Options:
 **Extract raw documents into structured units**
 ```bash
 python3 -m policylens.cli chunk-extract
+python3 -m policylens.cli chunk-extract --doc-id 42   # single document (testing/debugging)
 ```
-Processes all documents with `status='raw'`. Writes to `extracted_units`. Advances status to `extracted`. Idempotent.
+Processes all documents with `status='raw'`. Dispatches to the correct extractor via `extractors/registry.py`. Writes to `extracted_units`. Advances status to `extracted`. Idempotent.
 
 **Normalize extracted units into provisions**
 ```bash
-python3 -m policylens.cli chunk-normalize
+python3 -m policylens.cli chunk-normalize              # Session 6
+python3 -m policylens.cli chunk-normalize --doc-id 42
 ```
 Processes all documents with `status='extracted'`. Writes to `provisions`, `legal_addresses`, `provision_references`. Advances status to `transformed`. Idempotent.
+
+**Run tests (no database required)**
+```bash
+python3 -m pytest tests/ -v
+```
 
 **Inspect corpus (development utility)**
 ```bash
@@ -159,20 +178,21 @@ documents (
 extracted_units (
     id                SERIAL PRIMARY KEY,
     doc_id            INTEGER REFERENCES documents(id),
-    source_schema     TEXT     -- 'fr_presdocu' | 'uslm' | ...
-    source_element_id TEXT     -- XML id attribute or derived key
-    element_type      TEXT     -- 'provision_candidate' | 'boilerplate' | 'preamble' | 'header'
+    source_schema     TEXT     -- 'fr_presdocu' | 'uslm'
+    source_element_id TEXT     -- XML id attribute or derived deterministic key
+    element_type      TEXT     -- 'provision_candidate' | 'preamble' | 'header'
     section_path      TEXT[]   -- hierarchy as extracted, e.g. ['Sec. 2', '(b)']
     raw_text          TEXT
     legal_address_raw TEXT     -- raw citation string if extractable, nullable
     nesting_depth     INTEGER
     extraction_notes  TEXT[]
+    created_at        TIMESTAMPTZ
     UNIQUE (doc_id, source_element_id)
 )
 
 -- Layer 2b: normalized provision records
 provisions (
-    id                  TEXT PRIMARY KEY,  -- doc_id:section_id:provision_index
+    id                  TEXT PRIMARY KEY,  -- {doc_id}|{section_id}|{provision_index}
     doc_id              INTEGER REFERENCES documents(id),
     extracted_unit_id   INTEGER REFERENCES extracted_units(id),
     section_id          TEXT,
@@ -181,9 +201,9 @@ provisions (
     text                TEXT,
     context_text        TEXT,   -- enriched string for vector embedding
     doc_type            TEXT,
-    element_type        TEXT,
+    element_type        TEXT,   -- 'provision_candidate' | 'boilerplate' | 'header'
     condition_stack     JSONB,
-    chunk_flag          TEXT,
+    chunk_flag          TEXT,   -- 'clean' | 'review_nested_conditional' | ...
     -- temporal (nullable; populated as data allows)
     legal_address_id    INTEGER REFERENCES legal_addresses(id),
     effective_date      DATE,
@@ -245,7 +265,7 @@ The `status` column is the pipeline contract between layers:
 | Congress | resolution | 64 |
 | Congress | bill | 36 |
 
-All 120 documents ingested with no null text and no errors.
+All 120 documents ingested with no null text and no errors. Layer 2a extraction complete.
 
 ---
 
@@ -267,10 +287,30 @@ Design decisions and rationale are in `docs/decisions_log.md`.
 Root: `<PRESDOCU>` with doc-type child (`EXECORD`, `PROCLA`, `PRNOTICE`, `DETERM`).
 Content: `<FP>` and `<P>` paragraph elements. Section boundaries detected by
 `<E T="04">` (section number) inside `<FP>`. Sub-paragraphs text-prefixed
-with `(a)`, `(b)`, etc.
+with `(a)`, `(b)`, etc. Boilerplate metadata tags stripped before extraction:
+`PRTPAGE`, `GPH`, `PSIG`, `PLACE`, `DATE`, `FRDOC`, `FILED`, `BILCOD`, `TITLE3`, `PRES`.
 
 **Congressional USLM**
 Root: `<bill>` or `<resolution>`. Explicit hierarchy:
 `<legis-body>` → `<section>` → `<subsection>` → `<paragraph>`.
 Section IDs from `<enum>` elements; machine-readable IDs on `id` attributes.
 Provision text in `<text>` elements.
+
+---
+
+## Extractor Architecture
+
+New sources are added by creating a new file in `policylens/extractors/` that
+subclasses `BaseExtractor` and registering it in `policylens/extractors/registry.py`.
+The CLI and normalizer are never modified for new sources.
+
+```python
+# policylens/extractors/registry.py — add one line per new source
+register("new_source_name", NewSourceExtractor)
+```
+
+The extractor contract enforced by `BaseExtractor` and `ExtractedUnit.validate()`:
+- `element_type` values from extractors: `provision_candidate` | `preamble` | `header`
+- `element_type = boilerplate` is assigned by the normalizer only (semantic judgment)
+- `source_element_id` must be unique within a document and deterministic across re-runs
+- `extract()` is pure: same input always produces same output

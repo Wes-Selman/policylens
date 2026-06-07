@@ -100,28 +100,65 @@ Tested against 119-S-31 (bill) and 119-SRES-7 (resolution).
 Dispatches by source field. Idempotent. Processes status='raw' documents.
 Advances to status='extracted'.
 
-**EXTRACTION OUTPUT** *(populate after Session 5 corpus run)*
+**EXTRACTION OUTPUT** *(Session 5 corpus run — 2026-06-07)*
+
 ```
--- Paste actual query results here before Session 6 begins:
-SELECT
-    source_schema,
-    element_type,
-    COUNT(*) as count,
-    AVG(nesting_depth) as avg_depth,
-    MAX(nesting_depth) as max_depth,
-    COUNT(*) FILTER (WHERE legal_address_raw IS NOT NULL) as with_citation
-FROM extracted_units
-GROUP BY source_schema, element_type
-ORDER BY source_schema, element_type;
+ source_schema |    element_type     | count | avg_depth | max_depth | with_citation
+---------------+---------------------+-------+-----------+-----------+---------------
+ fr_presdocu   | preamble            |   118 |      0.00 |         0 |             0
+ fr_presdocu   | provision_candidate |   109 |      0.71 |         1 |             0
+ uslm          | header              |   349 |      0.85 |         3 |             0
+ uslm          | provision_candidate |   834 |      1.66 |         6 |             0
 ```
 
-Total extracted_units: [FILL IN]
-Documents with extraction errors: [FILL IN]
-Max nesting_depth observed: [FILL IN]
-Provisions with legal_address_raw populated: [FILL IN]
+Total extracted_units: 1,410
+Documents with extraction errors: 0
+Max nesting_depth observed: 6 (uslm), 1 (fr_presdocu)
+Provisions with legal_address_raw populated: 0 (expected — citations appear
+  in prose text, not in structured XML attributes; normalizer will detect
+  via regex in provision text for review_cross_reference flagging)
 
-*The normalizer agenda below is a candidate design. Review and adjust
-against the actual extraction output above before implementation begins.*
+**Pre-normalization findings (review before Session 6 implementation):**
+
+Finding 1 — Proclamations are entirely preamble (expected, not a bug):
+All 8 presidential proclamations in the corpus extracted as preamble-only,
+producing zero provision_candidate units. Proclamations are declaratory
+documents ("I hereby proclaim X as Y Day") — they do not assign duties,
+permissions, or powers to any subject. They have no deontic content and
+therefore no provisions by definition. In the product, a user navigating
+to a proclamation in Mode A will see the full text labeled as context/
+preamble with a note that no deontic provisions were identified. This is
+correct and informative — it tells the user something real about the
+nature of the document. EOs and notices that continue national emergencies
+DO contain operative legal clauses and extracted provision_candidates as
+expected. See interpretation_notes.md for the user-facing framing of this.
+
+Finding 2 — USLM nesting depth reaches 6:
+Some bills have six levels of hierarchy (section → subsection → paragraph
+→ subparagraph → clause → subclause). The 2-layer condition_stack collapse
+rule applies to conditional logic within a provision, not to structural
+hierarchy. Deep USLM nesting is handled correctly by recursive walking —
+each level with a <text> child becomes its own extracted_unit. No
+adjustment to the collapse rule needed.
+
+Finding 3 — FR nesting depth max 1:
+FR documents are structurally flat (section-level paragraphs and one level
+of sub-paragraphs). Max depth 1 matches expectations from corpus inspection.
+
+Finding 4 — Bare noun phrase list items at depth 6 (NEW — affects normalizer):
+Corpus inspection of depth-6 USLM units (bill 119-S-23) revealed units with
+raw_text like "the Defense Intelligence Agency;" — a bare noun phrase with
+no verb and no modality. These are list items in a deeply enumerated
+structure whose operative obligation lives in a parent provision several
+levels up. They are technically correct extractions (a <text> element
+exists at that hierarchy level) but semantically incomplete in isolation.
+The normalizer needs an explicit heuristic to detect and flag these.
+See normalizer atomicity heuristic section below — bare noun phrase
+detection added as a fourth flag condition. See interpretation_notes.md
+for the user-facing framing.
+
+*The normalizer agenda below is a candidate design, updated to reflect
+Finding 4. Review all findings above before implementation begins.*
 
 ---
 
@@ -144,18 +181,27 @@ Decisions made in this review go in the decisions log before implementation.
 
 ### 1. Decide normalizer atomicity heuristic
 
-**Candidate approach (to be confirmed or revised against extraction output):**
+**Candidate approach (updated based on corpus inspection — Finding 4):**
 
-Phase 1 atomicity heuristic — flag for review if the extracted_unit text:
+Phase 1 atomicity heuristic — flag chunk_flag = 'review_boundary' if any
+of the following apply to the extracted_unit text:
 - Contains more than one sentence with distinct grammatical subjects
   (heuristic: >1 occurrence of a subject-verb pattern with different subjects)
 - Has condition_stack depth > 2 (mandatory per Session 3 decision)
 - Contains a coordinating conjunction ("and", "or") connecting two
   independent clauses each with their own subject and verb
+- Bare noun phrase detection (NEW — from corpus Finding 4): raw_text
+  contains no finite verb AND is under ~15 words. These are list-item
+  fragments whose operative obligation lives in a parent provision.
+  Flag as review_boundary; do not auto-merge or auto-split.
 
 This is an auditable heuristic, not a semantic judgment. The intent is
-to surface candidates for human review, not to auto-split. The normalizer
-flags; it does not split.
+to surface candidates for human review, not to auto-split or auto-merge.
+The normalizer flags; it does not restructure.
+
+The bare noun phrase heuristic will fire on the depth-6 USLM units
+observed in 119-S-23 and likely similar structures in other large bills.
+Expect a meaningful number of review_boundary flags from this condition.
 
 Record the decided heuristic in the decisions log before writing code.
 
