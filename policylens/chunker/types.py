@@ -10,6 +10,13 @@ Design constraints (from handoff):
 - element_type values assigned by extractors: 'provision_candidate' | 'preamble' | 'header'
   'boilerplate' is assigned by the normalizer (semantic judgment), never here.
 - Pipe character used as separator in provision id: {doc_id}|{section_id}|{provision_index}
+
+- jurisdiction_scope: coarse structural signal set by the extractor.
+  Fine-grained classification (preempts_state, defers_to_state, creates_floor)
+  is assigned by the normalizer using textual heuristics.
+  Extractor may only assign: 'federal_only' | 'involves_states' | 'unknown'
+  The normalizer maps these to the full provision-level enum:
+    federal_only | preempts_state | defers_to_state | creates_floor | unknown
 """
 
 from __future__ import annotations
@@ -18,6 +25,10 @@ from dataclasses import dataclass, field
 
 # Valid element_type values the extractor may assign.
 EXTRACTOR_ELEMENT_TYPES = frozenset({"provision_candidate", "preamble", "header"})
+
+# Valid jurisdiction_scope values the extractor may assign.
+# Normalizer may refine 'involves_states' into a more specific value.
+EXTRACTOR_JURISDICTION_SCOPES = frozenset({"federal_only", "involves_states", "unknown"})
 
 
 @dataclass
@@ -76,6 +87,25 @@ class ExtractedUnit:
     Used by the normalizer's condition_stack heuristic.
     """
 
+    jurisdiction_scope: str = "federal_only"
+    """
+    Coarse jurisdiction signal assigned by the extractor.
+    Valid extractor values: 'federal_only' | 'involves_states' | 'unknown'
+
+    'federal_only'    — no state-reference patterns detected in the element text.
+                        Default for all FR PRESDOCU and USLM elements.
+    'involves_states' — one or more state-reference patterns detected
+                        (e.g. 'State government', 'States may', 'preempt State').
+                        Signals the normalizer to apply fine-grained classification.
+    'unknown'         — extractor could not determine jurisdiction signal
+                        (e.g. element text was empty or ambiguous).
+
+    The normalizer maps 'involves_states' to one of:
+        preempts_state | defers_to_state | creates_floor | involves_states
+    The provision-level field (provision_schema.yaml: jurisdiction) carries
+    the full refined enum. 'federal_only' passes through unchanged.
+    """
+
     extraction_notes: list[str] = field(default_factory=list)
     """
     Free-text notes from the extractor about edge cases, ambiguities, or
@@ -99,6 +129,11 @@ class ExtractedUnit:
             raise ValueError(
                 f"Extractor may not assign element_type={self.element_type!r}. "
                 f"Valid values: {sorted(EXTRACTOR_ELEMENT_TYPES)}"
+            )
+        if self.jurisdiction_scope not in EXTRACTOR_JURISDICTION_SCOPES:
+            raise ValueError(
+                f"Extractor may not assign jurisdiction_scope={self.jurisdiction_scope!r}. "
+                f"Valid values: {sorted(EXTRACTOR_JURISDICTION_SCOPES)}"
             )
         if not self.source_element_id:
             raise ValueError("source_element_id must be non-empty.")

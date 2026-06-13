@@ -20,6 +20,12 @@ Boilerplate tag stripping (before text extraction):
 source_element_id derivation:
   - Use XML id attribute if present
   - Otherwise: {subtype}:{section_path_slug}:{paragraph_index}
+
+jurisdiction_scope detection:
+  - Default: 'federal_only'
+  - Set to 'involves_states' when _INVOLVES_STATES_PATTERN matches the unit text.
+  - Fine-grained classification (preempts_state, defers_to_state, creates_floor)
+    is the normalizer's responsibility, not the extractor's.
 """
 
 from __future__ import annotations
@@ -47,6 +53,21 @@ _SUBPARA_PATTERN = re.compile(r"^\([a-z0-9]+\)", re.IGNORECASE)
 
 # Known subtypes and their root element tag names
 _SUBTYPE_TAGS = frozenset({"EXECORD", "PROCLA", "PRNOTICE", "DETERM"})
+
+# Coarse state-reference pattern. Matches text that mentions state governments,
+# state law, or state authority. The normalizer refines this into
+# preempts_state | defers_to_state | creates_floor.
+_INVOLVES_STATES_PATTERN = re.compile(
+    r"\b("
+    r"State government|States? may|States? shall|States? must"
+    r"|State law|State laws"
+    r"|preempt|supersede|displace|occupy the field"
+    r"|no State may|State law is preempted"
+    r"|subject to State law|as determined by the State"
+    r"|minimum standard|not less than|may provide greater|more protective"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _slugify(path: list[str]) -> str:
@@ -99,6 +120,16 @@ def _strip_boilerplate_tags(root: etree._Element) -> None:
             else:
                 parent.text = (parent.text or "") + tail
             parent.remove(elem)
+
+
+def _jurisdiction_scope(text: str) -> str:
+    """
+    Return 'involves_states' if the text contains a state-reference pattern,
+    otherwise 'federal_only'. 'unknown' is reserved for empty/unparseable text.
+    """
+    if not text:
+        return "unknown"
+    return "involves_states" if _INVOLVES_STATES_PATTERN.search(text) else "federal_only"
 
 
 class FRPresdocuExtractor(BaseExtractor):
@@ -200,6 +231,7 @@ class FRPresdocuExtractor(BaseExtractor):
                         element_type="provision_candidate",
                         section_path=list(current_section_path),
                         nesting_depth=0,
+                        jurisdiction_scope=_jurisdiction_scope(text),
                         extraction_notes=(
                             [f"section_heading: {current_section_heading}"]
                             if current_section_heading else []
@@ -237,6 +269,7 @@ class FRPresdocuExtractor(BaseExtractor):
                     element_type="provision_candidate",
                     section_path=section_path,
                     nesting_depth=nesting,
+                    jurisdiction_scope=_jurisdiction_scope(text),
                     extraction_notes=(
                         [f"section_heading: {current_section_heading}"]
                         if current_section_heading else []
@@ -263,6 +296,7 @@ class FRPresdocuExtractor(BaseExtractor):
                     element_type="preamble",
                     section_path=[],
                     nesting_depth=0,
+                    jurisdiction_scope=_jurisdiction_scope(text),
                     extraction_notes=(
                         ["authority_vested_formula"] if is_preamble else []
                     ),
@@ -319,7 +353,7 @@ class FRPresdocuExtractor(BaseExtractor):
         text = " ".join(p for p in parts if p)
         # Clean up punctuation artifacts from stripping tags
         text = re.sub(r"\s+", " ", text).strip()
-        text = re.sub(r"^[.\s]+", "", text)  # leading periods/spaces
+        text = re.sub(r"^[\.\s]+", "", text)  # leading periods/spaces
         return text
 
     def _make_element_id(

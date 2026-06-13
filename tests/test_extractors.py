@@ -9,7 +9,11 @@ All samples are embedded as strings so no filesystem dependency on the live DB.
 import pytest
 from policylens.extractors.fr_presdocu import FRPresdocuExtractor
 from policylens.extractors.uslm import USLMExtractor
-from policylens.chunker.types import EXTRACTOR_ELEMENT_TYPES
+from policylens.chunker.types import (
+    ExtractedUnit,
+    EXTRACTOR_ELEMENT_TYPES,
+    EXTRACTOR_JURISDICTION_SCOPES,
+)
 
 
 # ── Corpus sample XML fixtures ──────────────────────────────────────────────
@@ -62,6 +66,18 @@ NOTICE_XML = '''<PRESDOCU>
     </PRNOTICE>
 </PRESDOCU>'''
 
+# EO with explicit state-directed provisions, to exercise involves_states detection.
+EO_STATE_DIRECTED_XML = '''<PRESDOCU>
+    <EXECORD>
+        <FP>By the authority vested in me as President, it is hereby ordered:</FP>
+        <FP><E T="04">Section 1</E>. <E T="03">State Coordination.</E> The Secretary shall ensure that State government officials are informed of the requirements of this order.</FP>
+        <P>(a) States may adopt additional requirements beyond those set forth herein, provided they are not less than the federal minimum standard.</P>
+        <P>(b) No State may impose requirements that conflict with this order.</P>
+        <FP><E T="04">Sec. 2</E>. <E T="03">Federal Standards.</E> All federal agencies shall comply with this order.</FP>
+        <P>(a) Agency heads shall submit quarterly reports to the President.</P>
+    </EXECORD>
+</PRESDOCU>'''
+
 BILL_S31_XML = '''<?xml version="1.0"?>
 <!DOCTYPE bill PUBLIC "-//US Congress//DTDs/bill.dtd//EN" "bill.dtd">
 <bill bill-stage="Introduced-in-Senate" public-private="public">
@@ -105,6 +121,31 @@ RESOLUTION_SRES7_XML = '''<?xml version="1.0"?>
 </section>
 </resolution-body>
 </resolution>'''
+
+# USLM bill with state-preemption language, to exercise involves_states detection.
+BILL_PREEMPTION_XML = '''<?xml version="1.0"?>
+<bill bill-stage="Introduced-in-Senate" public-private="public">
+<legis-body>
+<section id="s001">
+<enum>1.</enum><header>Federal Preemption</header>
+<subsection id="s001a">
+<enum>(a)</enum><header>In general</header>
+<text>No State may enact or enforce any law that is inconsistent with the provisions of this Act.</text>
+</subsection>
+<subsection id="s001b">
+<enum>(b)</enum><header>Savings clause</header>
+<text>Nothing in this Act shall be construed to preempt any State law that provides greater protection to consumers.</text>
+</subsection>
+</section>
+<section id="s002">
+<enum>2.</enum><header>Federal Standards</header>
+<subsection id="s002a">
+<enum>(a)</enum><header>Minimum requirements</header>
+<text>All persons subject to this Act shall comply with the minimum standard established herein.</text>
+</subsection>
+</section>
+</legis-body>
+</bill>'''
 
 
 def make_doc(doc_id: int, raw_text: str, doc_type: str = "executive_order",
@@ -232,6 +273,74 @@ class TestFRPresdocuExtractor:
         # The (b) and (i) sub-paragraphs should be nested
         assert len(nested) >= 1, "Should have at least one nested sub-paragraph"
 
+    # ── jurisdiction_scope tests ───────────────────────────────────────────
+
+    def test_jurisdiction_scope_default_is_federal_only(self):
+        """Units with no state-reference language must have jurisdiction_scope='federal_only'."""
+        ext = FRPresdocuExtractor(make_doc(1, EO_14407_XML))
+        units = ext.extract()
+        # EO_14407_XML has no state-reference language; all units should be federal_only
+        for u in units:
+            assert u.jurisdiction_scope == "federal_only", (
+                f"Expected federal_only, got {u.jurisdiction_scope!r} "
+                f"for unit {u.source_element_id!r}: {u.raw_text[:80]!r}"
+            )
+
+    def test_jurisdiction_scope_involves_states_detected(self):
+        """Units with state-reference language must have jurisdiction_scope='involves_states'."""
+        ext = FRPresdocuExtractor(make_doc(1, EO_STATE_DIRECTED_XML))
+        units = ext.extract()
+        involves = [u for u in units if u.jurisdiction_scope == "involves_states"]
+        assert len(involves) >= 1, (
+            "Expected at least one involves_states unit from EO with state-directed provisions"
+        )
+
+    def test_jurisdiction_scope_values_valid(self):
+        """All units must have a jurisdiction_scope within the extractor-permitted set."""
+        for xml, doc_type in [
+            (EO_14407_XML, "executive_order"),
+            (EO_STATE_DIRECTED_XML, "executive_order"),
+            (PROCLAMATION_XML, "presidential_proclamation"),
+            (NOTICE_XML, "notice"),
+        ]:
+            ext = FRPresdocuExtractor(make_doc(1, xml, doc_type))
+            for u in ext.extract():
+                assert u.jurisdiction_scope in EXTRACTOR_JURISDICTION_SCOPES, (
+                    f"Invalid jurisdiction_scope {u.jurisdiction_scope!r} "
+                    f"on unit {u.source_element_id!r}"
+                )
+
+    def test_involves_states_specific_phrases(self):
+        """Check that each key phrase pattern triggers involves_states."""
+        trigger_phrases = [
+            "State government officials are informed",
+            "States may adopt additional requirements",
+            "not less than the federal minimum standard",
+            "No State may impose requirements",
+        ]
+        ext = FRPresdocuExtractor(make_doc(1, EO_STATE_DIRECTED_XML))
+        units = ext.extract()
+        involves_texts = [u.raw_text for u in units if u.jurisdiction_scope == "involves_states"]
+        combined = " ".join(involves_texts)
+        # At least one trigger phrase should appear in the involves_states units
+        matched = [p for p in trigger_phrases if any(
+            p.lower() in t.lower() for t in involves_texts
+        )]
+        assert len(matched) >= 1, (
+            f"None of the expected trigger phrases found in involves_states units. "
+            f"involves_states texts: {involves_texts}"
+        )
+
+    def test_purely_federal_units_not_flagged(self):
+        """Units in EO_STATE_DIRECTED_XML that don't mention states stay federal_only."""
+        ext = FRPresdocuExtractor(make_doc(1, EO_STATE_DIRECTED_XML))
+        units = ext.extract()
+        federal_only = [u for u in units if u.jurisdiction_scope == "federal_only"]
+        # Sec. 2(a) "Agency heads shall submit quarterly reports" has no state reference
+        assert len(federal_only) >= 1, (
+            "Expected at least one federal_only unit alongside involves_states units"
+        )
+
 
 # ── USLMExtractor tests ────────────────────────────────────────────────────
 
@@ -339,6 +448,76 @@ class TestUSLMExtractor:
         ext = USLMExtractor(doc)
         assert ext.extract() == []
 
+    # ── jurisdiction_scope tests ───────────────────────────────────────────
+
+    def test_jurisdiction_scope_default_is_federal_only(self):
+        """Units with no state-reference language must have jurisdiction_scope='federal_only'."""
+        ext = USLMExtractor(make_doc(10, BILL_S31_XML, "bill"))
+        units = ext.extract()
+        # BILL_S31_XML has no state-reference language; all units should be federal_only
+        for u in units:
+            assert u.jurisdiction_scope == "federal_only", (
+                f"Expected federal_only, got {u.jurisdiction_scope!r} "
+                f"for unit {u.source_element_id!r}: {u.raw_text[:80]!r}"
+            )
+
+    def test_jurisdiction_scope_involves_states_detected(self):
+        """Units with state-preemption language must have jurisdiction_scope='involves_states'."""
+        ext = USLMExtractor(make_doc(10, BILL_PREEMPTION_XML, "bill"))
+        units = ext.extract()
+        involves = [u for u in units if u.jurisdiction_scope == "involves_states"]
+        assert len(involves) >= 1, (
+            "Expected at least one involves_states unit from bill with preemption provisions"
+        )
+
+    def test_jurisdiction_scope_values_valid(self):
+        """All units must have a jurisdiction_scope within the extractor-permitted set."""
+        for xml, doc_type in [
+            (BILL_S31_XML, "bill"),
+            (BILL_PREEMPTION_XML, "bill"),
+            (RESOLUTION_SRES7_XML, "resolution"),
+        ]:
+            ext = USLMExtractor(make_doc(10, xml, doc_type))
+            for u in ext.extract():
+                assert u.jurisdiction_scope in EXTRACTOR_JURISDICTION_SCOPES, (
+                    f"Invalid jurisdiction_scope {u.jurisdiction_scope!r} "
+                    f"on unit {u.source_element_id!r}"
+                )
+
+    def test_involves_states_specific_phrases(self):
+        """Each key preemption/deference phrase must be detected in BILL_PREEMPTION_XML."""
+        ext = USLMExtractor(make_doc(10, BILL_PREEMPTION_XML, "bill"))
+        units = ext.extract()
+        involves_texts = [u.raw_text for u in units if u.jurisdiction_scope == "involves_states"]
+        # "No State may" and "greater protection" both appear in BILL_PREEMPTION_XML
+        assert any("No State may" in t for t in involves_texts), (
+            "Expected 'No State may' to trigger involves_states"
+        )
+        assert any("greater protection" in t or "preempt" in t for t in involves_texts), (
+            "Expected preemption language to trigger involves_states"
+        )
+
+    def test_purely_federal_units_not_flagged(self):
+        """The Sec. 2(a) minimum-standard unit stays federal_only (no state reference)."""
+        ext = USLMExtractor(make_doc(10, BILL_PREEMPTION_XML, "bill"))
+        units = ext.extract()
+        federal_only = [u for u in units if u.jurisdiction_scope == "federal_only"]
+        # The "minimum standard established herein" unit references no state actors
+        assert len(federal_only) >= 1, (
+            "Expected at least one federal_only unit alongside involves_states units"
+        )
+
+    def test_header_units_are_federal_only(self):
+        """Header units carry no deontic content and should always be federal_only."""
+        ext = USLMExtractor(make_doc(10, BILL_PREEMPTION_XML, "bill"))
+        units = ext.extract()
+        headers = [u for u in units if u.element_type == "header"]
+        for h in headers:
+            assert h.jurisdiction_scope == "federal_only", (
+                f"Header unit {h.source_element_id!r} has unexpected "
+                f"jurisdiction_scope={h.jurisdiction_scope!r}"
+            )
+
 
 # ── Cross-cutter tests ─────────────────────────────────────────────────────
 
@@ -369,3 +548,52 @@ class TestExtractorContract:
         for u in ext.extract():
             if u.element_type == "provision_candidate":
                 assert u.raw_text, f"Empty raw_text for provision_candidate {u.source_element_id}"
+
+    def test_validate_rejects_invalid_jurisdiction_scope(self):
+        """ExtractedUnit.validate() must raise ValueError for any invalid jurisdiction_scope."""
+        invalid_values = [
+            "preempts_state",   # normalizer-only value
+            "defers_to_state",  # normalizer-only value
+            "creates_floor",    # normalizer-only value
+            "state",            # not in any enum
+            "",                 # empty string
+            "FEDERAL_ONLY",     # wrong case
+        ]
+        for bad_value in invalid_values:
+            unit = ExtractedUnit(
+                source_doc_id=1,
+                source_schema="fr_presdocu",
+                source_element_id="test_unit",
+                raw_text="Some text.",
+                element_type="provision_candidate",
+                jurisdiction_scope=bad_value,
+            )
+            with pytest.raises(ValueError, match="jurisdiction_scope"):
+                unit.validate()
+
+    def test_validate_accepts_all_valid_jurisdiction_scopes(self):
+        """ExtractedUnit.validate() must accept every value in EXTRACTOR_JURISDICTION_SCOPES."""
+        for valid_scope in EXTRACTOR_JURISDICTION_SCOPES:
+            unit = ExtractedUnit(
+                source_doc_id=1,
+                source_schema="fr_presdocu",
+                source_element_id="test_unit",
+                raw_text="Some text.",
+                element_type="provision_candidate",
+                jurisdiction_scope=valid_scope,
+            )
+            unit.validate()  # must not raise
+
+    def test_both_extractors_produce_valid_jurisdiction_scopes(self):
+        """All units from both extractors must pass validate() on jurisdiction_scope."""
+        test_cases = [
+            (FRPresdocuExtractor, make_doc(1, EO_14407_XML, "executive_order")),
+            (FRPresdocuExtractor, make_doc(1, EO_STATE_DIRECTED_XML, "executive_order")),
+            (USLMExtractor, make_doc(10, BILL_S31_XML, "bill")),
+            (USLMExtractor, make_doc(10, BILL_PREEMPTION_XML, "bill")),
+        ]
+        for ExtractorClass, doc in test_cases:
+            ext = ExtractorClass(doc)
+            for u in ext.extract():
+                # validate() covers both element_type and jurisdiction_scope
+                u.validate()

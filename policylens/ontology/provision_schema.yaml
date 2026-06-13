@@ -1,7 +1,7 @@
 # provision_schema.yaml
 # PolicyLens — Provision Record Schema
 # Decided: Sessions 0–4
-# Last updated: Session 4
+# Last updated: Session 6b
 #
 # A provision is a single deontic proposition of the form <subject, modality, object>
 # — the minimal unit that assigns exactly one Hohfeldian modality to exactly one subject
@@ -14,6 +14,13 @@
 #   extracted_unit_id (lineage FK to extracted_units table).
 # - These fields support RAG embedding, knowledge graph promotion, and point-in-time
 #   legislative state queries respectively.
+#
+# Session 6b changes:
+# - Added: jurisdiction field (after doc_type in the structural fields section).
+#   Captures how each provision relates to the federal/state division of authority.
+#   Coarse signal (federal_only | involves_states | unknown) is set by the extractor
+#   on ExtractedUnit.jurisdiction_scope; the normalizer refines to the full enum here.
+#   See decisions_log.md — Session 6: Jurisdiction Scope Field.
 
 provision:
 
@@ -99,6 +106,57 @@ provision:
       document subtypes that were previously collapsed into 'other'.
       Used in context_text construction and UX display.
     required: true
+
+  jurisdiction:
+    type: string
+    enum:
+      - federal_only
+      - preempts_state
+      - defers_to_state
+      - creates_floor
+      - involves_states
+      - unknown
+    description: >
+      Jurisdiction scope of this provision — how it relates to the
+      federal/state division of authority.
+
+      'federal_only'    — operates only at the federal level; no state
+                          interaction.
+      'preempts_state'  — explicitly displaces or prohibits state law in
+                          the relevant domain (Supremacy Clause operation).
+      'defers_to_state' — explicitly grants states discretion or authority
+                          (e.g. "States may", "subject to State law").
+      'creates_floor'   — sets a federal minimum standard; states may enact
+                          more protective rules (common in labor, environment,
+                          consumer protection).
+      'involves_states'  — text references state governments or state law
+                           but the specific relationship (preemption, floor,
+                           deference) could not be determined by the normalizer.
+                           Requires human review.
+      'unknown'         — jurisdiction signal absent or ambiguous.
+
+      Assignment protocol:
+        Extractor sets a coarse signal on ExtractedUnit.jurisdiction_scope
+        (values: 'federal_only' | 'involves_states' | 'unknown').
+        Normalizer maps 'involves_states' to the appropriate refined value
+        using textual heuristics (preemption keywords, deference keywords,
+        floor keywords). 'federal_only' and 'unknown' pass through unchanged.
+
+      Detection signals (normalizer heuristics):
+        preempts_state:   "preempt", "supersede", "displace", "occupy the field",
+                          "no State may", "State law is preempted"
+        defers_to_state:  "State may", "States may", "subject to State law",
+                          "as determined by the State", "State government"
+                          without a preemption marker
+        creates_floor:    "minimum", "at least", "not less than", "may provide
+                          greater", "more protective"
+
+      Note: state-level legislation ingestion is explicitly deferred
+      (see decisions_log.md). This field captures the federalism dimension
+      visible from federal documents already in the corpus — it does not
+      require state corpus expansion.
+    required: true
+    default: federal_only
 
   condition_stack:
     type: array

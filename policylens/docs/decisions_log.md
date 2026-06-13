@@ -613,3 +613,74 @@ Mode A must display bare list-item fragments with sufficient parent
 context (section heading + parent provision text) so the fragment is
 interpretable. A provision card showing only "the Defense Intelligence
 Agency;" with no context is not useful. See interpretation_notes.md.
+
+---
+
+## Session 6b: Jurisdiction Scope Field
+
+**Decision:** Add a `jurisdiction` field to provisions and a coarse
+`jurisdiction_scope` signal to `ExtractedUnit`. The extractor sets
+`jurisdiction_scope` ('federal_only' | 'involves_states' | 'unknown');
+the normalizer refines 'involves_states' into the full provision-level
+enum ('preempts_state' | 'defers_to_state' | 'creates_floor' | 'involves_states').
+
+**Why add this now (before Session 6 normalization)?**
+The field must exist on `ExtractedUnit` before extractors run so that
+the normalizer has the coarse signal available without re-extraction.
+Adding it after extraction would require a full re-run of Layer 2a.
+The migration (`migrate_session6b.sql`) is additive and idempotent;
+existing rows default to 'federal_only', which is correct for the
+current federal-only corpus.
+
+**Why not detect jurisdiction in the extractor?**
+Fine-grained classification (preemption vs. deference vs. floor) is a
+semantic judgment requiring keyword recognition in running text — the same
+class of judgment that boilerplate detection requires, and for the same
+reason it belongs to the normalizer. The extractor only makes structural
+observations. Setting 'federal_only' as the default and flagging
+'involves_states' when state-reference patterns appear is a structural
+observation (pattern present / absent), not a semantic classification.
+This preserves the extractor/normalizer boundary established in Session 5.
+
+**Why not ingest state legislation?**
+Full state corpus ingestion is a significant product expansion: 50+
+source schemas, inconsistent API coverage across states, and a separate
+baseline_doctrine supplement for each jurisdiction. The federalism
+dimension visible from federal documents already in the corpus — EOs
+directing state agencies, preemption clauses in federal bills, deference
+grants — is the higher-value capture with zero additional source work.
+State legislation is deferred; the field design is forward-compatible
+with it (the enum values are jurisdiction-agnostic) but does not require it.
+
+**Detection signals for normalizer (textual heuristics):**
+- preempts_state:  "preempt", "supersede", "displace", "occupy the field",
+                   "no State may", "State law is preempted"
+- defers_to_state: "State may", "States may", "subject to State law",
+                   "as determined by the State", "State government"
+                   (without preemption marker)
+- creates_floor:   "minimum", "at least", "not less than",
+                   "may provide greater", "more protective"
+
+**Schema changes:**
+- `policylens/chunker/types.py`: `jurisdiction_scope: str = 'federal_only'`
+  added to `ExtractedUnit`; `EXTRACTOR_JURISDICTION_SCOPES` frozenset added;
+  `validate()` extended to check it.
+- `policylens/ontology/provision_schema.yaml`: `jurisdiction` field added
+  after `doc_type` in the structural fields section.
+- `policylens/extractors/fr_presdocu.py`: `_INVOLVES_STATES_PATTERN` regex
+  and `_jurisdiction_scope()` helper added; `jurisdiction_scope` passed to
+  all `ExtractedUnit` constructors.
+- `policylens/extractors/uslm.py`: same pattern as fr_presdocu; header units
+  hardcoded to 'federal_only' (headers carry no deontic content).
+- `policylens/db/extracted_units.py`: `jurisdiction_scope` added to the
+  upsert INSERT column list.
+- `policylens/db/migrate_session6b.sql`: new migration adding
+  `jurisdiction_scope` to `extracted_units` and `jurisdiction` to
+  `provisions`, both defaulting to 'federal_only'.
+- `tests/test_extractors.py`: 12 new tests added (5 per extractor class +
+  3 cross-cutter); test suite grows from 34 to 46. Two new XML fixtures
+  added: `EO_STATE_DIRECTED_XML` and `BILL_PREEMPTION_XML`.
+
+**Deferred:** Full state legislative ingestion (LegiScan/OpenStates).
+Separate source family, separate baseline_doctrine supplement, separate
+scoping session. Not gated on this field design.

@@ -21,6 +21,12 @@ if present, tagged element_type: 'preamble'.
 source_element_id derivation:
   - id attribute on the element (always present for section/subsection in USLM)
   - If absent: {parent_id}:{enum_text}:{depth}:{index}
+
+jurisdiction_scope detection:
+  - Default: 'federal_only'
+  - Set to 'involves_states' when _INVOLVES_STATES_PATTERN matches the unit text.
+  - Fine-grained classification (preempts_state, defers_to_state, creates_floor)
+    is the normalizer's responsibility, not the extractor's.
 """
 
 from __future__ import annotations
@@ -41,6 +47,21 @@ _HIERARCHY_TAGS = {
 _TEXT_TAG = "text"
 _HEADER_TAG = "header"
 _ENUM_TAG = "enum"
+
+# Coarse state-reference pattern. Matches text that mentions state governments,
+# state law, or state authority. The normalizer refines this into
+# preempts_state | defers_to_state | creates_floor.
+_INVOLVES_STATES_PATTERN = re.compile(
+    r"\b("
+    r"State government|States? may|States? shall|States? must"
+    r"|State law|State laws"
+    r"|preempt|supersede|displace|occupy the field"
+    r"|no State may|State law is preempted"
+    r"|subject to State law|as determined by the State"
+    r"|minimum standard|not less than|may provide greater|more protective"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _clean_text(text: str | None) -> str:
@@ -68,6 +89,16 @@ def _make_derived_id(parent_id: str, enum_text: str, depth: int, index: int) -> 
     """Derive a source_element_id when the XML id attribute is absent."""
     slug = re.sub(r"[^a-z0-9]", "", (enum_text or "").lower())
     return f"{parent_id}_{slug or str(index)}_d{depth}"
+
+
+def _jurisdiction_scope(text: str) -> str:
+    """
+    Return 'involves_states' if the text contains a state-reference pattern,
+    otherwise 'federal_only'. 'unknown' is reserved for empty/unparseable text.
+    """
+    if not text:
+        return "unknown"
+    return "involves_states" if _INVOLVES_STATES_PATTERN.search(text) else "federal_only"
 
 
 class USLMExtractor(BaseExtractor):
@@ -143,6 +174,7 @@ class USLMExtractor(BaseExtractor):
                 element_type="preamble",
                 section_path=[],
                 nesting_depth=0,
+                jurisdiction_scope=_jurisdiction_scope(text),
             ))
 
     def _walk_hierarchy(
@@ -189,6 +221,7 @@ class USLMExtractor(BaseExtractor):
                         element_type="header",
                         section_path=child_path,
                         nesting_depth=depth,
+                        jurisdiction_scope="federal_only",
                     ))
 
             # ── Provision candidate (<text> child) ────────────────────────
@@ -204,6 +237,7 @@ class USLMExtractor(BaseExtractor):
                         element_type="provision_candidate",
                         section_path=child_path,
                         nesting_depth=depth,
+                        jurisdiction_scope=_jurisdiction_scope(provision_text),
                         extraction_notes=(
                             [f"header: {_get_all_text(header_elem)}"]
                             if header_elem is not None else []

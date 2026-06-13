@@ -28,8 +28,8 @@ def upsert_extracted_units(conn, units: list[ExtractedUnit]) -> int:
                 INSERT INTO extracted_units
                     (doc_id, source_schema, source_element_id, element_type,
                      section_path, raw_text, legal_address_raw,
-                     nesting_depth, extraction_notes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     nesting_depth, jurisdiction_scope, extraction_notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (doc_id, source_element_id) DO NOTHING
                 """,
                 (
@@ -41,6 +41,7 @@ def upsert_extracted_units(conn, units: list[ExtractedUnit]) -> int:
                     unit.raw_text,
                     unit.legal_address_raw,
                     unit.nesting_depth,
+                    unit.jurisdiction_scope,
                     unit.extraction_notes,
                 ),
             )
