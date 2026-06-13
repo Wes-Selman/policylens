@@ -1,6 +1,6 @@
 # project_plan.md
 # PolicyLens — Project Plan
-# Last updated: Session 5
+# Last updated: Session 7
 
 ---
 
@@ -70,11 +70,11 @@ Artifacts:
 - controlled_vocabulary.yaml
 - baseline_doctrine.yaml
 - decisions_log.md (rationale layer)
-- Session handoff documents (Sessions 0–5)
+- Session handoff documents (Sessions 0–7)
 
 ---
 
-## Phase 1 — Chunk & Store 🔄 Current
+## Phase 1 — Chunk & Store ✅ Complete (Session 7)
 
 **Goal:** Extract all provisions from the 120-document corpus, store them
 with structural metadata, and surface ambiguous chunk boundaries for review.
@@ -96,11 +96,26 @@ Implemented extractors:
 New source = new extractor file + one line in registry.py. Normalizer
 and CLI are never touched.
 
-**Layer 2b — Normalization** 🔄 In Progress (Session 6)
-Reads extracted_units, applies atomicity test, detects nesting,
-constructs context_text, assigns chunk_flag, writes provision records.
-Also writes to legal_addresses and provision_references as citations
-are identified.
+**Layer 2b — Normalization** ✅ Complete (Session 7)
+Source-agnostic normalizer reads extracted_units, applies atomicity
+heuristics, detects nested conditionals, constructs context_text, assigns
+chunk_flag, detects inline citations, refines jurisdiction, and writes
+provision records. Also writes to legal_addresses and provision_references.
+
+Normalizer decisions:
+- element_type overrides: provision_candidate → boilerplate (General
+  Provisions formulaic language); provision_candidate → header (definition
+  block intros)
+- Boilerplate child inheritance: child units of a boilerplate parent
+  inherit the boilerplate classification
+- chunk_flag priority: review_nested_conditional > review_cross_reference
+  > review_boundary > clean
+- Inline citation detection: both short form (N U.S.C.) and long form
+  (section N of title N, United States Code)
+- context_text: section_heading when available; section_path label as
+  fallback for FR documents
+- jurisdiction refinement: involves_states → preempts_state |
+  defers_to_state | creates_floor via keyword heuristics
 
 ### Database tables added in Phase 1
 
@@ -114,46 +129,33 @@ are identified.
 
 doc_status enum extended: raw → extracted → transformed → classified → error
 
-### Tasks
+### Final corpus results (Session 7)
 
-- ✅ Write DDL for extracted_units, provisions, legal_addresses,
-  provision_references; extend doc_status enum
-- ✅ Define ExtractedUnit dataclass (policylens/chunker/types.py)
-- ✅ Define extractor interface (policylens/extractors/base.py)
-- ✅ Define extractor dispatch registry (policylens/extractors/registry.py)
-- ✅ Implement FRPresdocuExtractor (policylens/extractors/fr_presdocu.py)
-- ✅ Implement USLMExtractor (policylens/extractors/uslm.py)
-- ✅ Wire CLI command: chunk-extract
-- ✅ Write extractor test suite (41 tests, no DB required)
-- 🔄 Implement normalizer (policylens/chunker/normalize.py)
-- 🔄 Wire CLI command: chunk-normalize
-- 🔄 Apply atomicity test: can this unit be split into two valid
-  〈subject, modality, object〉 triples without loss of meaning?
-- 🔄 Detect and encode nested conditionals → condition_stack
-- 🔄 Detect cross-reference objects → provision_references rows
-- 🔄 Construct context_text for each provision (for future embedding)
-- 🔄 Set chunk_flag for provisions requiring human boundary review
-- 🔄 Generate chunking report: total provisions, by doc_type, chunk_flag
-  distribution, condition_stack depth distribution, element_type breakdown
+- Documents at status='transformed': 120/120
+- Total provisions: 943
+- By element_type: 682 provision_candidate (bill), 143 provision_candidate
+  (resolution), 79 provision_candidate (EO), 30 boilerplate (EO), 9 header
+  (bill)
+- chunk_flag: clean=474, review_boundary=349, review_cross_reference=120,
+  review_nested_conditional=0
+- condition_stack: depth-0=862, depth-1=78, depth-2=3, depth-3+=0
+- jurisdiction: federal_only=926, creates_floor=8, involves_states=5,
+  preempts_state=3, defers_to_state=1
+- context_text: 943/943 populated
 
-### Success criteria
+### Phase 1 completion checklist
 
-- All 120 documents processed (status = transformed)
-- Chunking report reviewed; edge case distribution understood
-- No silent omissions (every source element accounted for in at least
-  one extracted_unit record or explicit exclusion log)
-- context_text populated on all provision records
-- All pipeline stages idempotent: safe to re-run without duplication
-
-### Deferred to annotation phase (Phase 3)
-
-modality, object_class, domain, valence, subject_type, baseline_statement
-
-### Deferred temporal fields (nullable in Phase 1; populated as data allows)
-
-effective_date, superseded_by, superseded_date, legal_address_id
-(on provisions — the legal_addresses table is created in Phase 1 but
-population is opportunistic, not required for Phase 1 completion)
+- ✅ All 120 documents at status='transformed'
+- ✅ Zero documents at status='raw' or 'extracted'
+- ✅ context_text populated on all 943 provision records
+- ✅ chunk_flag populated on all 943 provision records
+- ✅ jurisdiction populated on all 943 provision records
+- ✅ Chunking report reviewed; edge case distribution understood
+- ✅ All pipeline stages idempotent (verified by re-running on 5 documents)
+- ✅ decisions_log.md updated through Session 7
+- ⬜ migrate_session7_jurisdiction_backfill.sql committed to repo
+  (documents the one-time backfill applied in Session 7; carry-forward
+  to Session 8)
 
 ---
 
@@ -167,13 +169,23 @@ phase begins. Scope: user data storage, API terms of use (Congress.gov,
 Federal Register), advertising data flows, threat model for a civic tech
 tool that scores legislation ideologically.
 
-Features:
+**Phase decomposition required:** "Phase 2" contains multiple distinct
+product surfaces that likely belong in separate phases:
+- Mode A (document browser) — read-only, no annotation required, ships early
+- Mode B (search) — requires pgvector and embedding pipeline
+- Mode C (temporal traversal) — requires temporal chain populated
+- Ideological visualization — requires Phase 3 annotation coverage
+- Legislator profiling / says-vs-does — requires legislator data joins
+  (feasibility not yet validated)
+
+The scoping session assigns sub-phase numbers and sequences these explicitly.
+
+Features (pending scoping):
 - Mode A: Provision browser — navigate by document → section → provision;
   section headings visible; document title persistent in header
 - Full-text search across provision text (existing tsvector on documents;
   add tsvector on provisions.text)
-- Structural filters: document type, section, chunk_flag status,
-  element_type
+- Structural filters: document type, section, chunk_flag status, element_type
 - Provision card display: text, section_heading, document title, doc type,
   date, source link (deep link via url + section_id)
 - Document-level view: all provisions in reading order, section hierarchy
@@ -234,8 +246,7 @@ Features:
 - Filter by annotation fields: domain, valence range, subject_type, modality
 - Provision detail view: all annotation fields, baseline_statement,
   cross-rules cited; provision_references displayed as linked legal addresses
-- 2D axis visualization: provisions plotted in economic × social liberty
-  space
+- 2D axis visualization: provisions plotted in economic × social liberty space
 - Document-level ideological profile: score distribution for selected document
 - Comparison view: two documents side by side
 - Mode C: Legal address page — all provision versions at a legal_address,
@@ -285,3 +296,6 @@ Success criteria:
 - Clustering sensitivity analysis (mixed-provision centroid distortion)
 - Refactor db/__init__.py: replace global pool singleton with explicit
   create_pool(dsn) factory (flagged Session 5; needed before Phase 2)
+- State legislative ingestion (LegiScan/OpenStates) — separate source
+  family, separate baseline_doctrine supplement, separate scoping session;
+  jurisdiction field is forward-compatible

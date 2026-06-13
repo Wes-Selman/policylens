@@ -685,53 +685,236 @@ with it (the enum values are jurisdiction-agnostic) but does not require it.
 Separate source family, separate baseline_doctrine supplement, separate
 scoping session. Not gated on this field design.
 
+---
+
+## Session 7: Normalizer Atomicity Heuristic
+
+### Step 0 — Pre-implementation corpus review
+
+**Status check:** All 120 documents confirmed at `status='extracted'`. Zero
+documents at `status='raw'` or `status='error'`. Clean starting state.
+
+**raw_text length distribution (extracted_units):**
+
+| source_schema | element_type        | count | min_chars | avg_chars | max_chars | under_20 | over_2000 |
+|---------------|---------------------|-------|-----------|-----------|-----------|----------|-----------|
+| fr_presdocu   | preamble            | 118   | 50        | 489       | 1201      | 0        | 0         |
+| fr_presdocu   | provision_candidate | 109   | 31        | 338       | 1258      | 0        | 0         |
+| uslm          | header              | 349   | 4         | 26        | 136       | 189      | 0         |
+| uslm          | provision_candidate | 834   | 3         | 137       | 1465      | 49       | 0         |
+
+No boundary errors in FR corpus. The 49 USLM provision_candidates under 20
+chars and the 189 USLM headers under 20 chars are expected. No over-2000-char
+outliers in any category; no missed section boundaries.
+
+**Finding 4 confirmed:** Corpus inspection of short USLM provision_candidates
+identified three distinct fragment patterns requiring separate treatment.
+See heuristic decision below.
 
 ---
 
-## Session 6b: Phase 2 Scoping Session (Deferred)
+### Decision: Normalizer Atomicity Heuristic (Session 7)
 
-**Decision:** Insert a dedicated scoping session between Phase 1 completion
-and any Phase 2 front-end work. This session is a hard prerequisite, not
-optional.
+**Three fragment patterns identified in corpus, each requiring distinct
+treatment:**
 
-**Why a separate scoping session rather than opening Phase 2 directly?**
-"Phase 2: front-end" as currently described contains multiple distinct
-product surfaces with different dependencies, infrastructure requirements,
-and readiness conditions. Treating them as a single phase produces a phase
-that is too large to plan, too diffuse to test, and likely to conflate
-work that should be sequenced (Mode A ships before annotation is complete;
-ideological visualization cannot ship until Phase 3 has sufficient coverage).
-A scoping session decomposes the work explicitly before implementation begins.
+**Pattern A — Em-dash continuation stubs**
+Examples: `"The Secretary shall—"`, `"is amended—"`, `"That Congress—"`.
+The em-dash is a USLM drafting convention for "followed by a list." The
+`<text>` element at this node holds only the introductory clause; the
+operative content is distributed across child nodes. Semantically incomplete
+regardless of word count — a length heuristic would miss long stubs like
+`"Section 236(c)(1) of the Immigration and Nationality Act (8 U.S.C.
+1226(c)(1)) is amended—"` (88 chars) entirely.
 
-**Three workstreams for the scoping session:**
+**Pattern B — Bare noun/verb phrase list items**
+Examples: `"airboats;"`, `"motorboats;"`, `"hovercraft;"`, `"swimming; and"`.
+Semicolon-terminated list items from an enumerated list. No finite verb, no
+subject, no modality. The operative obligation lives in a parent provision
+several levels up.
 
-1. Security/legal review (hard gate on all Phase 2 work):
-   - User data storage: what is collected, retained, deleted
-   - API terms of use: Congress.gov and Federal Register terms as they
-     apply to a public-facing product that re-serves their content
-   - Advertising data flows: contextual advertising (Carbon Ads, Ethical Ads)
-     is the monetization target; behavioral/political advertising is a hard no;
-     the scoping session must define what data can flow to ad networks
-   - Threat model: a civic tool that scores legislation ideologically is a
-     target for manipulation, coordinated misuse, and political pressure;
-     the threat model must be explicit before the product is public
+**Pattern C — Definition block intros**
+Examples: `"In this Act:"`, `"In this section:"`, `"In this subsection:"`.
+Colon-terminated intro lines for definition blocks. No deontic content.
+Occur at nesting_depth 0–2 across 9 documents.
 
-2. Phase decomposition: assign phase numbers and sequencing to:
-   - Mode A (document browser) — read-only, no annotation required, earliest ship
-   - Mode B (search) — requires pgvector extension and embedding pipeline
-   - Mode C (temporal traversal) — requires temporal chain populated
-   - Ideological visualization — requires Phase 3 annotation coverage
-   - Legislator profiling / says-vs-does — requires legislator data joins
-     (feasibility not yet validated)
-   - Constituent contact tools — downstream of legislator profiling
+**Decided heuristics:**
 
-3. Feasibility validation:
-   - Legislator data joins: the join between provision records and legislator
-     voting/sponsorship records has not been validated. Source, schema, and
-     join key need to be confirmed before any phase that depends on this
-     feature is sequenced.
-   - Technology and hosting decisions: framework, API layer, deployment
-     target — none decided; must be resolved before implementation begins.
+| Pattern | Detection signal | Assigned value |
+|---------|-----------------|----------------|
+| Em-dash stub | `raw_text` ends with `—` (U+2014) | `chunk_flag = 'review_boundary'` |
+| Bare fragment | No legislative modal verb AND ≤15 words AND no trailing em-dash | `chunk_flag = 'review_boundary'` |
+| Definition block intro | Matches `^In (this\|the) [A-Za-z ]+[:—]` | `element_type = 'header'` |
 
-**Trigger:** Phase 1 completion (all 120 documents at status='transformed',
-chunking report reviewed and recorded).
+**Legislative modal verb list (for bare fragment detection):**
+`shall`, `may`, `must`, `will`, `is`, `are`, `was`, `were`, `be`, `been`,
+`have`, `has`, `do`, `does`, `did`.
+The 15-word threshold is approximate, calibrated against the corpus sample.
+
+**chunk_flag priority order (highest wins):**
+1. `condition_stack` depth > 2 → `review_nested_conditional`
+2. `legal_address_raw` not None OR inline citation detected → `review_cross_reference`
+3. Atomicity heuristic fires → `review_boundary`
+4. Otherwise → `clean`
+
+**Why em-dash signal is length-independent:**
+A length threshold would miss longer stubs. The trailing em-dash is the
+correct signal regardless of text length.
+
+---
+
+### Decision: Normalizer element_type Override — Extension to 'header'
+
+**Session 5 sanctioned:** normalizer may override `provision_candidate →
+boilerplate` (semantic judgment about formulaic non-substantive content).
+
+**Session 7 extends this to:** normalizer may also override `provision_candidate
+→ header` for definition block intro lines.
+
+**Rationale:** Definition block intros (`"In this Act:"`) are structural
+navigation markers, not provisions — they have no independent deontic content.
+`header` is more accurate than `boilerplate`:
+- `boilerplate` = formulaic legal immunity/limitation language (substantive
+  but predictable); tagged `domain:governmental_structure` at annotation
+- `header` = structural navigation marker; skipped for annotation
+
+The two normalizer overrides are the same kind of thing: both are cases where
+the extractor correctly identified a `<text>` element (structural observation)
+and the normalizer determines the content has no deontic substance (semantic
+judgment). The Session 5 rationale applies identically.
+
+**Known artifact:** `element_type = 'header'` now has two assignment origins —
+extractor-assigned (structural headers from XML) and normalizer-assigned
+(definition block intros). The `extracted_unit` record always preserves the
+original extractor assignment (`provision_candidate`); lineage is fully
+traceable.
+
+---
+
+### Decision: Boilerplate Child Inheritance
+
+**Observation:** EO Sec. 3(a) `"Nothing in this order shall be construed to
+impair or otherwise affect:"` correctly triggers boilerplate detection. Its
+child list items (`"the authority granted by law to an executive department..."`,
+`"the functions of the Director..."`) do not contain the trigger phrase but
+are semantically part of the same boilerplate clause.
+
+**Decision:** When a unit is classified `boilerplate`, all path prefixes of
+its section_path are registered in a `boilerplate_section_prefixes` set. Child
+units whose section_path has any registered prefix inherit the `boilerplate`
+classification, regardless of their text content.
+
+**Why:** Child list items are continuations of the parent boilerplate clause —
+they have no independent deontic content. Leaving them as `provision_candidate`
+would send semantically meaningless fragments to the annotation model.
+
+**Implementation:** `_has_boilerplate_ancestor()` checks strict prefixes only.
+Applied before `_classify_element_type()` in the processing loop.
+
+---
+
+### Decision: context_text Section Path Fallback
+
+**Observation:** FR documents produce no `header` element_type units from the
+extractor — section headings are embedded inline in paragraph text, not in
+separate XML elements. The `section_heading_map` built from extractor header
+units is therefore always empty for FR documents.
+
+**Decision:** `_build_context_text()` accepts an optional `section_path`
+parameter. When `section_heading` is None and `section_path` is non-empty,
+the joined section path (e.g. `"Sec. 2(b)"`) is used as the section label
+in the context_text header. Explicit heading always takes priority.
+
+**Result:** FR provision context_text now reads:
+`"[executive_order — EO Title — Sec. 2]"`
+rather than `"[executive_order — EO Title]"`, providing meaningful section
+context for vector embedding.
+
+---
+
+### Decision: Inline Citation Detection for chunk_flag
+
+**Observation:** `legal_address_raw` is null across the entire corpus —
+citations appear in prose text, not in structured XML attributes. The original
+`review_cross_reference` trigger (`legal_address_raw is not None`) never fired.
+
+**Decision:** `_assign_chunk_flag()` falls back to inline citation detection
+via `_CITATION_RE` when `legal_address_raw` is None. Two citation variants
+detected:
+1. Short form: `N U.S.C. [§] section` (e.g. `"8 U.S.C. 1226(c)(1)"`)
+2. Long form: `section N of title N, United States Code`
+   (e.g. `"section 553 of title 5, United States Code"`)
+
+**Corpus impact:** 92 provision_candidates with inline citations now correctly
+receive `chunk_flag = 'review_cross_reference'` rather than `'clean'`.
+
+---
+
+### Decision: jurisdiction_scope Backfill (Session 7 — Post-extraction)
+
+**Problem:** `migrate_session6b.sql` added `jurisdiction_scope` to
+`extracted_units` with `DEFAULT 'federal_only'`. This defaulted all 1,410
+existing rows to `federal_only` without applying the `_INVOLVES_STATES_PATTERN`
+regex to their text. Five units with genuine state-related language were
+missed; 20 total units had incorrect `federal_only` assignments.
+
+**Fix:** One-time SQL backfill applied in Session 7:
+```sql
+UPDATE extracted_units
+SET jurisdiction_scope = 'involves_states'
+WHERE jurisdiction_scope = 'federal_only'
+AND raw_text ~* '[pattern]';
+```
+20 rows updated across 11 documents. Affected documents reset to
+`status='extracted'` and re-normalized.
+
+**Prevention:** This problem cannot recur for new documents — new ingestion
+runs through the extractor which applies `_INVOLVES_STATES_PATTERN` at
+extraction time. The backfill was a one-time repair for the pre-Session-6b
+corpus.
+
+**Artifact:** `policylens/db/migrate_session7_jurisdiction_backfill.sql`
+should be committed to preserve the exact SQL applied (see session 8 task).
+
+---
+
+### Session 7 Corpus Results (Final)
+
+**Total provisions:** 943
+
+**By doc_type and element_type:**
+| doc_type | element_type | count |
+|----------|-------------|-------|
+| executive_order | boilerplate | 30 |
+| executive_order | provision_candidate | 79 |
+| bill | header | 9 |
+| bill | provision_candidate | 682 |
+| resolution | provision_candidate | 143 |
+
+**chunk_flag distribution:**
+| flag | count |
+|------|-------|
+| clean | 474 (50%) |
+| review_boundary | 349 (37%) |
+| review_cross_reference | 120 (13%) |
+| review_nested_conditional | 0 |
+
+**condition_stack depth:**
+| depth | count |
+|-------|-------|
+| 0 (unconditional) | 862 |
+| 1 | 78 |
+| 2 | 3 |
+| 3+ | 0 |
+
+**jurisdiction:**
+| value | count |
+|-------|-------|
+| federal_only | 926 |
+| creates_floor | 8 |
+| involves_states | 5 |
+| preempts_state | 3 |
+| defers_to_state | 1 |
+
+**context_text:** 943/943 populated, 0 nulls.
+**Documents at status='transformed':** 120/120.

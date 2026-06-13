@@ -236,5 +236,112 @@ def chunk_extract(doc_id):
     )
 
 
+
+# ── Normalization command ──────────────────────────────────────────────────────
+
+@cli.command("chunk-normalize")
+@click.option("--doc-id", "doc_id", default=None, type=int,
+              help="Process a single document by id (for testing/debugging).")
+def chunk_normalize(doc_id):
+    """
+    Layer 2b: Normalize extracted units into provision records.
+
+    Queries documents with status='extracted' (or the specified --doc-id),
+    runs the source-agnostic normalizer, writes to provisions,
+    legal_addresses, and provision_references, and advances document
+    status to 'transformed'.
+
+    Idempotent: re-running on an already-normalized document safely
+    overwrites existing provision records (ON CONFLICT DO UPDATE).
+    """
+    from policylens.chunker.normalize import normalize_document
+
+    pool = get_pool()
+
+    total_docs = 0
+    total_provisions = 0
+    total_errors = 0
+    global_flag_counts: dict[str, int] = {}
+
+    with pool.connection() as conn:
+        # Fetch target documents
+        if doc_id is not None:
+            doc = fetch_doc_by_id(conn, doc_id)
+            if doc is None:
+                click.echo(f"Error: document id={doc_id} not found.", err=True)
+                return
+            docs = [doc]
+        else:
+            docs = fetch_docs_by_status(conn, "extracted")
+
+        if not docs:
+            click.echo("No documents with status='extracted' found. Nothing to do.")
+            return
+
+        click.echo(f"Processing {len(docs)} document(s)...")
+        click.echo("")
+
+        for doc in docs:
+            doc_id_val = doc["id"]
+            doc_type = doc.get("doc_type", "unknown")
+            external_id = doc.get("external_id", "")
+
+            try:
+                summary = normalize_document(conn, doc)
+                advance_doc_status(conn, doc_id_val, "transformed")
+                conn.commit()
+            except Exception as exc:
+                conn.rollback()
+                click.echo(
+                    f"  [{doc_id_val:>4}] {doc_type:<30} {external_id:<30} "
+                    f"DB ERROR: {exc}",
+                    err=True,
+                )
+                total_errors += 1
+                continue
+
+            # Per-document errors from normalizer (unit-level, not fatal)
+            for err in summary.get("errors", []):
+                click.echo(
+                    f"  [{doc_id_val:>4}] UNIT ERROR: {err}", err=True
+                )
+
+            provisions_written = summary["provisions_written"]
+            flag_counts = summary.get("chunk_flag_counts", {})
+            type_counts = summary.get("element_type_counts", {})
+
+            # Accumulate global flag counts
+            for flag, count in flag_counts.items():
+                global_flag_counts[flag] = global_flag_counts.get(flag, 0) + count
+
+            flag_summary = "  ".join(
+                f"{k}={v}" for k, v in sorted(flag_counts.items())
+            )
+            type_summary = "  ".join(
+                f"{k}={v}" for k, v in sorted(type_counts.items())
+            )
+
+            click.echo(
+                f"  [{doc_id_val:>4}] {doc_type:<30} {external_id:<30} "
+                f"provisions={provisions_written:>4}  "
+                f"flags=({flag_summary})  "
+                f"types=({type_summary})"
+            )
+
+            total_docs += 1
+            total_provisions += provisions_written
+
+    click.echo("")
+    click.echo(
+        f"Done. {total_docs} documents processed, "
+        f"{total_provisions} provisions written, "
+        f"{total_errors} errors."
+    )
+    if global_flag_counts:
+        click.echo("chunk_flag distribution:")
+        for flag, count in sorted(global_flag_counts.items(), key=lambda x: -x[1]):
+            click.echo(f"  {flag:<35} {count}")
+
+
 if __name__ == "__main__":
     cli()
