@@ -684,3 +684,54 @@ with it (the enum values are jurisdiction-agnostic) but does not require it.
 **Deferred:** Full state legislative ingestion (LegiScan/OpenStates).
 Separate source family, separate baseline_doctrine supplement, separate
 scoping session. Not gated on this field design.
+
+
+---
+
+## Session 6b: Phase 2 Scoping Session (Deferred)
+
+**Decision:** Insert a dedicated scoping session between Phase 1 completion
+and any Phase 2 front-end work. This session is a hard prerequisite, not
+optional.
+
+**Why a separate scoping session rather than opening Phase 2 directly?**
+"Phase 2: front-end" as currently described contains multiple distinct
+product surfaces with different dependencies, infrastructure requirements,
+and readiness conditions. Treating them as a single phase produces a phase
+that is too large to plan, too diffuse to test, and likely to conflate
+work that should be sequenced (Mode A ships before annotation is complete;
+ideological visualization cannot ship until Phase 3 has sufficient coverage).
+A scoping session decomposes the work explicitly before implementation begins.
+
+**Three workstreams for the scoping session:**
+
+1. Security/legal review (hard gate on all Phase 2 work):
+   - User data storage: what is collected, retained, deleted
+   - API terms of use: Congress.gov and Federal Register terms as they
+     apply to a public-facing product that re-serves their content
+   - Advertising data flows: contextual advertising (Carbon Ads, Ethical Ads)
+     is the monetization target; behavioral/political advertising is a hard no;
+     the scoping session must define what data can flow to ad networks
+   - Threat model: a civic tool that scores legislation ideologically is a
+     target for manipulation, coordinated misuse, and political pressure;
+     the threat model must be explicit before the product is public
+
+2. Phase decomposition: assign phase numbers and sequencing to:
+   - Mode A (document browser) — read-only, no annotation required, earliest ship
+   - Mode B (search) — requires pgvector extension and embedding pipeline
+   - Mode C (temporal traversal) — requires temporal chain populated
+   - Ideological visualization — requires Phase 3 annotation coverage
+   - Legislator profiling / says-vs-does — requires legislator data joins
+     (feasibility not yet validated)
+   - Constituent contact tools — downstream of legislator profiling
+
+3. Feasibility validation:
+   - Legislator data joins: the join between provision records and legislator
+     voting/sponsorship records has not been validated. Source, schema, and
+     join key need to be confirmed before any phase that depends on this
+     feature is sequenced.
+   - Technology and hosting decisions: framework, API layer, deployment
+     target — none decided; must be resolved before implementation begins.
+
+**Trigger:** Phase 1 completion (all 120 documents at status='transformed',
+chunking report reviewed and recorded).
