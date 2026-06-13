@@ -1,6 +1,13 @@
 # PolicyLens
 
-A legislative intelligence pipeline that parses bills, executive orders, and federal rules into atomic provisions, classified across philosophical, rights, moral, and societal dimensions. Party alignment is a derived output, not an input label.
+A civic intelligence platform that gives every person direct access to
+what the law actually says — at the provision level, without editorial
+interpretation. The foundation is a corpus of federal legislative and
+regulatory text parsed into atomic deontic provisions (one subject, one
+modality, one object), stored with structural metadata, and available
+through a clean API and a trustworthy reading interface.
+
+Party alignment is a derived output, not an input label.
 
 ---
 
@@ -8,17 +15,42 @@ A legislative intelligence pipeline that parses bills, executive orders, and fed
 
 The project is built in three layers, with Layer 2 split into two sub-stages:
 
-**Layer 1 — Raw Source Aggregator** ✅
-Ingests legislative documents from public APIs into PostgreSQL with full-text search. CLI-first, no frontend.
+**Layer 1 — Raw Source Aggregator** ✅ Complete
+Ingests legislative documents from public APIs into PostgreSQL. CLI-first,
+no frontend. Current corpus: 120 documents (Federal Register PRESDOCU +
+Congressional USLM XML).
 
-**Layer 2a — Extraction** ✅
-Source-specific extractors parse raw XML into a structured intermediate representation (`ExtractedUnit`). Each source schema has its own extractor that implements a common interface. New source = new extractor file; the normalizer is never touched. Current extractors: `FRPresdocuExtractor` (Federal Register PRESDOCU XML), `USLMExtractor` (Congressional USLM XML). Extracted units are persisted in the `extracted_units` table — the reprocessing boundary between raw documents and normalized provisions.
+**Layer 2a — Extraction** ✅ Complete (Session 5)
+Source-specific extractors parse raw XML into a structured intermediate
+representation (`ExtractedUnit`). Each source schema has its own extractor
+implementing a common interface. New source = new extractor file; the
+normalizer is never touched. Current extractors: `FRPresdocuExtractor`
+(Federal Register PRESDOCU XML), `USLMExtractor` (Congressional USLM XML).
+Extracted units are persisted in the `extracted_units` table — the
+reprocessing boundary between raw documents and normalized provisions.
 
-**Layer 2b — Normalization** 🔄
-Source-agnostic normalizer reads `ExtractedUnit` records and produces provision records. Applies the atomicity test, detects nested conditionals, constructs `context_text` for future vector embedding, assigns `chunk_flag`, and writes to `provisions`, `legal_addresses`, and `provision_references`. Advances document status from `extracted` to `transformed`.
+**Layer 2b — Normalization** ✅ Complete (Session 7)
+Source-agnostic normalizer reads `ExtractedUnit` records and produces
+provision records. Applies the atomicity heuristic, detects nested
+conditionals, constructs `context_text` for vector embedding, assigns
+`chunk_flag`, detects inline citations, refines jurisdiction, and writes
+to `provisions`, `legal_addresses`, and `provision_references`. Advances
+document status from `extracted` to `transformed`. 943 provisions written
+from 120 documents.
 
-**Layer 3 — PolicyLens Proper** 🔲
-Model-primary annotation of provisions across a controlled vocabulary (domain, valence, subject_type, modality). Provisions are scored on signed ordinal liberty axes (economic, social) and projected into 2D ideological space. Party alignment is derived from clustering output, not used as a training label. Human reviewers sample-check model annotations with stratified sampling weighted toward complex provisions.
+**Layer 2c — chunk-resolve** 🔲 Phase 2 (next)
+Deterministic merge pass resolves em-dash stubs, bare fragment list items,
+and inline cross-references. LLM agent pass on residual ambiguous cases.
+Output: corpus where `chunk_flag='clean'` is genuinely earned. Prerequisite
+before UI ships to real users.
+
+**Layer 3 — PolicyLens Proper** 🔲 Phase 3
+Model-primary annotation of provisions across a controlled vocabulary
+(domain, valence, subject_type, modality). Provisions are scored on signed
+ordinal liberty axes (economic, social) and projected into 2D ideological
+space. Party alignment is derived from clustering output, not used as a
+training label. Human reviewers sample-check model annotations with
+stratified sampling weighted toward complex provisions.
 
 ---
 
@@ -26,7 +58,8 @@ Model-primary annotation of provisions across a controlled vocabulary (domain, v
 
 - **Language:** Python 3.9+
 - **Database:** PostgreSQL 16 (Docker)
-- **Key libraries:** httpx, lxml, psycopg, psycopg-pool, tenacity, click, python-dotenv
+- **Key libraries:** httpx, lxml, psycopg, psycopg-pool, tenacity, click,
+  python-dotenv
 
 ---
 
@@ -39,21 +72,23 @@ policylens/
 ├── requirements.txt
 ├── docs/
 │   ├── decisions_log.md           # Why the system is structured the way it is
-│   ├── project_plan.md            # Phased plan, phases 0–5
-│   ├── interpretation_notes.md    # Working notes seeding future user-facing training docs
+│   ├── project_plan.md            # Phased plan through Phase 6
+│   ├── interpretation_notes.md    # Working notes seeding future user-facing docs
 │   └── handoffs/                  # Session handoff prompts, one per session
 ├── ontology/
 │   ├── provision_schema.yaml      # Full provision record schema
 │   ├── controlled_vocabulary.yaml # Enumerated values + cross-rules
 │   └── baseline_doctrine.yaml     # Constitutional baseline table per sub-domain
 ├── tests/
-│   ├── test_extractors.py         # Extractor unit tests (32 tests, no DB required)
-│   └── test_cli_dispatch.py       # Dispatch and persistence tests (9 tests, no DB required)
+│   ├── test_extractors.py         # Extractor unit tests (46 tests, no DB required)
+│   └── test_normalizer.py         # Normalizer unit tests (no DB required)
 └── policylens/
     ├── db/
     │   ├── __init__.py            # Connection pool (get_pool)
     │   ├── schema.sql             # Layer 1 table definitions and enums
-    │   ├── migrate_session5.sql   # Session 5 migration: 4 new tables + enum extension
+    │   ├── migrate_session5.sql   # Session 5: 4 new tables + enum extension
+    │   ├── migrate_session6b.sql  # Session 6b: jurisdiction fields
+    │   ├── migrate_session7_jurisdiction_backfill.sql  # One-time backfill audit trail
     │   └── extracted_units.py     # DB persistence helpers for extraction pipeline
     ├── sources/
     │   ├── federal_register.py    # FR API client
@@ -65,7 +100,7 @@ policylens/
     │   └── uslm.py                # Congressional USLM XML extractor
     ├── chunker/
     │   ├── types.py               # ExtractedUnit dataclass
-    │   └── normalize.py           # Source-agnostic normalizer (Session 6)
+    │   └── normalize.py           # Source-agnostic normalizer (Layer 2b)
     └── cli.py                     # Entry point for all pipeline commands
 ```
 
@@ -99,10 +134,13 @@ API key: https://api.congress.gov/sign-up/
 docker compose up -d
 ```
 
-**4. Apply the Session 5 migration**
+**4. Apply migrations in order**
 ```bash
 # ALTER TYPE ADD VALUE cannot run inside a transaction; use psql directly
 psql $POSTGRES_DSN -f policylens/db/migrate_session5.sql
+psql $POSTGRES_DSN -f policylens/db/migrate_session6b.sql
+# migrate_session7_jurisdiction_backfill.sql is audit-trail only;
+# only needed when restoring from a pre-Session-6b backup
 ```
 
 ---
@@ -130,27 +168,25 @@ Options:
 **Extract raw documents into structured units**
 ```bash
 python3 -m policylens.cli chunk-extract
-python3 -m policylens.cli chunk-extract --doc-id 42   # single document (testing/debugging)
+python3 -m policylens.cli chunk-extract --doc-id 42   # single document
 ```
-Processes all documents with `status='raw'`. Dispatches to the correct extractor via `extractors/registry.py`. Writes to `extracted_units`. Advances status to `extracted`. Idempotent.
+Processes all documents with `status='raw'`. Dispatches to the correct
+extractor via `extractors/registry.py`. Writes to `extracted_units`.
+Advances status to `extracted`. Idempotent.
 
 **Normalize extracted units into provisions**
 ```bash
-python3 -m policylens.cli chunk-normalize              # Session 6
+python3 -m policylens.cli chunk-normalize
 python3 -m policylens.cli chunk-normalize --doc-id 42
 ```
-Processes all documents with `status='extracted'`. Writes to `provisions`, `legal_addresses`, `provision_references`. Advances status to `transformed`. Idempotent.
+Processes all documents with `status='extracted'`. Writes to `provisions`,
+`legal_addresses`, `provision_references`. Advances status to `transformed`.
+Idempotent.
 
 **Run tests (no database required)**
 ```bash
 python3 -m pytest tests/ -v
 ```
-
-**Inspect corpus (development utility)**
-```bash
-python3 inspect_corpus.py
-```
-Dumps corpus overview, one sample document per (doc_type × format) combination, and null/error inventory to `corpus_samples/`.
 
 ---
 
@@ -185,6 +221,7 @@ extracted_units (
     raw_text          TEXT
     legal_address_raw TEXT     -- raw citation string if extractable, nullable
     nesting_depth     INTEGER
+    jurisdiction_scope TEXT    -- 'federal_only' | 'involves_states' | 'unknown'
     extraction_notes  TEXT[]
     created_at        TIMESTAMPTZ
     UNIQUE (doc_id, source_element_id)
@@ -199,11 +236,12 @@ provisions (
     section_heading     TEXT,
     provision_index     INTEGER,
     text                TEXT,
-    context_text        TEXT,   -- enriched string for vector embedding
+    context_text        TEXT,   -- enriched string for vector embedding (RAG)
     doc_type            TEXT,
     element_type        TEXT,   -- 'provision_candidate' | 'boilerplate' | 'header'
     condition_stack     JSONB,
     chunk_flag          TEXT,   -- 'clean' | 'review_nested_conditional' | ...
+    jurisdiction        TEXT,   -- 'federal_only' | 'preempts_state' | ...
     -- temporal (nullable; populated as data allows)
     legal_address_id    INTEGER REFERENCES legal_addresses(id),
     effective_date      DATE,
@@ -233,7 +271,7 @@ legal_addresses (
     id              SERIAL PRIMARY KEY,
     statute         TEXT,   -- e.g. '26 U.S.C.'
     section         TEXT,   -- e.g. '§ 7701'
-    canonical_cite  TEXT,   -- normalized citation string
+    canonical_cite  TEXT,
     UNIQUE (statute, section)
 )
 
@@ -254,7 +292,7 @@ The `status` column is the pipeline contract between layers:
 
 ---
 
-## Current Data Sample
+## Corpus Results (Session 7)
 
 | Source | Doc Type | Count |
 |--------|----------|-------|
@@ -265,7 +303,13 @@ The `status` column is the pipeline contract between layers:
 | Congress | resolution | 64 |
 | Congress | bill | 36 |
 
-All 120 documents ingested with no null text and no errors. Layer 2a extraction complete.
+**Provisions:** 943 total across 120 documents
+**chunk_flag:** clean=474, review_boundary=349, review_cross_reference=120
+**context_text:** 943/943 populated
+**Documents at status='transformed':** 120/120
+
+Phase 2 (chunk-resolve) will resolve the 469 non-clean provisions before
+the UI ships.
 
 ---
 
@@ -273,11 +317,34 @@ All 120 documents ingested with no null text and no errors. Layer 2a extraction 
 
 The ontology lives in `ontology/`. Three files:
 
-- `provision_schema.yaml` — every field on a provision record, its type, allowed values, and constraints
-- `controlled_vocabulary.yaml` — enumerated value definitions and cross-rules; designed to load directly into model annotation prompts
-- `baseline_doctrine.yaml` — per-sub-domain constitutional baseline table used to anchor valence scoring; versioned by controlling authority date
+- `provision_schema.yaml` — every field on a provision record, its type,
+  allowed values, and constraints
+- `controlled_vocabulary.yaml` — enumerated value definitions and cross-rules;
+  designed to load directly into model annotation prompts
+- `baseline_doctrine.yaml` — per-sub-domain constitutional baseline table
+  used to anchor valence scoring; versioned by controlling authority date
 
 Design decisions and rationale are in `docs/decisions_log.md`.
+
+---
+
+## Extractor Architecture
+
+New sources are added by creating a new file in `policylens/extractors/`
+that subclasses `BaseExtractor` and registering it in
+`policylens/extractors/registry.py`. The CLI and normalizer are never
+modified for new sources.
+
+```python
+# policylens/extractors/registry.py — add one line per new source
+register("new_source_name", NewSourceExtractor)
+```
+
+The extractor contract enforced by `BaseExtractor` and `ExtractedUnit.validate()`:
+- `element_type` values from extractors: `provision_candidate` | `preamble` | `header`
+- `element_type = boilerplate` is assigned by the normalizer only (semantic judgment)
+- `source_element_id` must be unique within a document and deterministic across re-runs
+- `extract()` is pure: same input always produces same output
 
 ---
 
@@ -294,23 +361,4 @@ with `(a)`, `(b)`, etc. Boilerplate metadata tags stripped before extraction:
 Root: `<bill>` or `<resolution>`. Explicit hierarchy:
 `<legis-body>` → `<section>` → `<subsection>` → `<paragraph>`.
 Section IDs from `<enum>` elements; machine-readable IDs on `id` attributes.
-Provision text in `<text>` elements.
-
----
-
-## Extractor Architecture
-
-New sources are added by creating a new file in `policylens/extractors/` that
-subclasses `BaseExtractor` and registering it in `policylens/extractors/registry.py`.
-The CLI and normalizer are never modified for new sources.
-
-```python
-# policylens/extractors/registry.py — add one line per new source
-register("new_source_name", NewSourceExtractor)
-```
-
-The extractor contract enforced by `BaseExtractor` and `ExtractedUnit.validate()`:
-- `element_type` values from extractors: `provision_candidate` | `preamble` | `header`
-- `element_type = boilerplate` is assigned by the normalizer only (semantic judgment)
-- `source_element_id` must be unique within a document and deterministic across re-runs
-- `extract()` is pure: same input always produces same output
+Provision text in `<text>` elements. Nesting reaches depth 6 in complex bills.

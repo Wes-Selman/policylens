@@ -350,6 +350,14 @@ corrected). It does not change when annotation fields change. This means
 embeddings remain valid across annotation passes, which is the common
 case.
 
+**Corpus expansion note (Session 8):** Expanding the corpus to the full
+Federal Register and Congressional back catalogs does not require
+rethinking the embedding strategy. context_text was designed for stability
+from the start. Full corpus coverage makes RAG and agent use cases
+qualitatively more valuable — a RAG query can retrieve provisions across
+the full legislative history, and an agent can traverse the temporal
+chain via superseded_by across real version history.
+
 ---
 
 ## Session 4: Temporal Fields (effective_date, superseded_by)
@@ -420,10 +428,10 @@ and 'transformed' in the doc_status enum.
 **Status flow:**
 raw → extracted → transformed → classified → error
 
-raw:        Layer 1 complete; document in documents table; no extracted_units
-extracted:  Layer 2a complete; extracted_units populated; provisions not yet written
+raw:         Layer 1 complete; document in documents table; no extracted_units
+extracted:   Layer 2a complete; extracted_units populated; provisions not yet written
 transformed: Layer 2b complete; provisions populated; annotation fields empty
-classified: Layer 3 complete; annotation fields populated
+classified:  Layer 3 complete; annotation fields populated
 
 **Why a separate 'extracted' status?**
 Without it, a document that has been extracted but not yet normalized has
@@ -455,6 +463,7 @@ Pipelines fail. Network errors, process kills, schema bugs. An idempotent
 pipeline can be re-run from any checkpoint without manual cleanup. This
 is especially important once the corpus grows beyond 120 documents where
 manual recovery becomes infeasible.
+
 ---
 
 ## Session 5: Extractor Dispatch Registry
@@ -497,9 +506,9 @@ This is a workaround for a deeper smell: `get_pool()` maintains a global
 singleton `_pool`, which is a concurrency hazard in any async context and
 makes dependency injection in tests unnecessarily indirect. The cleaner
 long-term solution is an explicit `create_pool(dsn)` factory instantiated
-by the CLI entry point, with the pool passed down explicitly. This should
+by the CLI entry point, with the pool passed down explicitly. This must
 be addressed before Phase 2 when the front-end introduces its own lifecycle
-management needs.
+management needs. It is the first backend task of Phase 2.
 
 ---
 
@@ -556,7 +565,7 @@ because there is no modality — no one is being told to do anything, permitted
 to do anything, or given any power or immunity.
 
 **User-facing implication:**
-In Mode A (document reading), a user navigating to a proclamation will see
+In the document reading UX, a user navigating to a proclamation will see
 the full text displayed as context/preamble with a clear indication that no
 deontic provisions were identified. This is informative, not a failure state.
 It correctly communicates something about the nature of the document that a
@@ -565,20 +574,9 @@ executive orders are directive. The distinction is meaningful to anyone
 trying to understand what the President's office actually did versus what it
 announced.
 
-**Documents that DO have provisions in the FR corpus:**
-Executive orders (all extracted provision_candidates: EOs 14407, the two
-unnamed EOs, and the immigration EO). Notices (the CAR national emergency
-continuation contains the operative clause "I am continuing for 1 year the
-national emergency" — a genuine exercise of executive power under the
-National Emergencies Act). Presidential determinations (the Iran petroleum
-determination contains a operative finding with legal effect).
-
 **What this means for corpus statistics:**
 When reporting provision counts, the proclamation zero-provision outcome
-must be explicitly noted, not silently omitted. A corpus overview that
-reports "N provisions from M documents" without noting that 8 of those
-documents contributed zero provisions would be misleading about the
-distribution of deontic content across document types.
+must be explicitly noted, not silently omitted.
 
 ---
 
@@ -589,30 +587,14 @@ distribution of deontic content across document types.
 e.g. "the Defense Intelligence Agency;" — with no finite verb, no
 modality marker, and no self-contained legal meaning.
 
-**Decision:** These units are correctly extracted (the XML has a <text>
-element at that hierarchy level) but are semantically incomplete. They
-are list items whose operative obligation lives in a parent provision
-several levels up. The normalizer must detect and flag them as
-chunk_flag = 'review_boundary'. No auto-merge or auto-split.
+**Decision (Session 5):** Flag as chunk_flag = 'review_boundary'. No
+auto-merge.
 
-**Heuristic:** A unit is a bare list-item fragment if its raw_text
-contains no finite verb AND is under approximately 15 words. This is
-an auditable structural signal, not a semantic judgment.
-
-**Why not auto-merge with the parent?**
-Auto-merging would require the normalizer to traverse the section
-hierarchy upward to find the operative parent — complex logic that
-introduces its own boundary errors. The safer approach is to flag and
-surface for human review. The reviewer can confirm the parent-child
-relationship and decide whether to merge, keep separate with a
-provision_reference edge, or annotate the fragment as a sub-item of
-the parent.
-
-**User-facing implication:**
-Mode A must display bare list-item fragments with sufficient parent
-context (section heading + parent provision text) so the fragment is
-interpretable. A provision card showing only "the Defense Intelligence
-Agency;" with no context is not useful. See interpretation_notes.md.
+**Decision revised (Session 8):** The "no auto-merge" decision is reversed.
+Deterministic merge is the correct resolution. See Session 8: chunk-resolve
+Pipeline Stage below. The Session 5 decision was made before the full
+chunk_flag picture was known; the Session 8 revision is grounded in the
+complete corpus result (349 review_boundary flags, 50% of total).
 
 ---
 
@@ -858,15 +840,9 @@ existing rows to `federal_only` without applying the `_INVOLVES_STATES_PATTERN`
 regex to their text. Five units with genuine state-related language were
 missed; 20 total units had incorrect `federal_only` assignments.
 
-**Fix:** One-time SQL backfill applied in Session 7:
-```sql
-UPDATE extracted_units
-SET jurisdiction_scope = 'involves_states'
-WHERE jurisdiction_scope = 'federal_only'
-AND raw_text ~* '[pattern]';
-```
-20 rows updated across 11 documents. Affected documents reset to
-`status='extracted'` and re-normalized.
+**Fix:** One-time SQL backfill applied in Session 7. 20 rows updated across
+11 documents. Affected documents reset to `status='extracted'` and
+re-normalized.
 
 **Prevention:** This problem cannot recur for new documents — new ingestion
 runs through the extractor which applies `_INVOLVES_STATES_PATTERN` at
@@ -874,7 +850,7 @@ extraction time. The backfill was a one-time repair for the pre-Session-6b
 corpus.
 
 **Artifact:** `policylens/db/migrate_session7_jurisdiction_backfill.sql`
-should be committed to preserve the exact SQL applied (see session 8 task).
+committed in Session 9. Contains the exact SQL applied, for audit trail.
 
 ---
 
@@ -918,3 +894,152 @@ should be committed to preserve the exact SQL applied (see session 8 task).
 
 **context_text:** 943/943 populated, 0 nulls.
 **Documents at status='transformed':** 120/120.
+
+---
+
+## Session 8: Product Strategy and Phase Structure
+
+### Decision: Persona Definitions
+
+Three personas defined. See project_plan.md for full descriptions.
+
+**Key relationship between personas:**
+Persona 1 (Overwhelmed Citizen) is an end user of what Persona 2
+(Data Builder) could build on top of PolicyLens. PolicyLens building
+the Persona 1 UI directly does not create technical debt for Persona 2,
+as long as the API is the contract and the UI is a consumer of it.
+
+**Why start with Persona 1 despite Persona 2 being the scale story?**
+The Persona 1 UI is the first client of the API and the proof that the
+API works. It provides tangibility for early product development and
+attracts builders. The reading experience does not constrain the data
+model — any UI decision that would constrain the data model is wrong by
+definition.
+
+---
+
+### Decision: API-First Architecture
+
+**Decision:** PolicyLens is a product, not purely a platform, but built
+API-first so the UI is the first client of the API, not the other way
+around.
+
+**Why API-first?**
+The only way to serve Persona 1 and Persona 2 without creating debt is
+to ensure the API is the contract and the UI is a consumer. If the UI
+drives the data model — denormalized fields for display convenience,
+schema assumptions baked into rendering — then Persona 2 builders are
+constrained by Persona 1 design decisions that have nothing to do with
+their use cases. API-first prevents this structurally, not by convention.
+
+**Why not platform-only?**
+A platform without a Persona 1 UI has no proof of concept, no early
+distribution channel, and no tangible product for attracting builders.
+The UI is not a distraction from the platform — it is the first
+demonstration that the platform works.
+
+---
+
+### Decision: chunk_flag Resolution Strategy (chunk-resolve pipeline stage)
+
+**The problem:** 469 of 943 provisions (50%) carry chunk_flag ≠ 'clean'
+after Session 7 normalization. This is a blocking prerequisite for any
+user-facing surface — a corpus where half the provisions have unresolved
+chunking uncertainty cannot be the source of truth Persona 1 requires.
+
+**Decision: deterministic resolution first, LLM agent on residual.**
+
+This reverses the Session 5 "no auto-merge" decision for bare noun phrase
+fragments. The Session 5 decision was correct at the time — before the
+full corpus run, the scope of the flag problem was unknown and caution
+was appropriate. The Session 7 corpus results (349 review_boundary flags,
+50% of total provisions) make clear that human review of this volume is
+not the right path. The USLM XML structure is well-defined enough that
+deterministic merge is reliable.
+
+**Layer 1 — Deterministic fixes:**
+
+Em-dash stubs: The USLM XML structure is known. The stub always has child
+nodes containing the operative content. Deterministic merger: concatenate
+the stub with its immediate children in document order. Structural fix,
+no model needed. Rationale: the em-dash is a drafting convention that
+always signals "followed by a list" in USLM XML; the child nodes are
+always the continuation.
+
+Bare noun phrase fragments: Walk up section_path until a unit with a
+finite verb and modality is found. Attach fragment as a list item under
+that parent. USLM nesting makes this traversal well-defined. Structural
+fix, no model needed. Rationale: bare fragments always participate in the
+obligation of their nearest ancestor with deontic content; the section_path
+array makes the ancestry explicit.
+
+Inline cross-references (review_cross_reference): These are not chunking
+problems — the provision text is correctly bounded. Resolution is reference
+extraction: parse the USC citation, upsert to legal_addresses, insert the
+provision_references junction record with ref_type = 'references'. Flag
+clears when the reference is resolved. Deterministic extraction task.
+
+**Layer 2 — LLM agent pass:**
+Whatever remains genuinely ambiguous after deterministic fixes — provisions
+where boundary judgment requires understanding legal meaning, not just XML
+structure — is the correct input for an LLM agent review pass. This
+residual set is expected to be small. This is chunk boundary validation,
+not annotation work (Phase 3).
+
+**Why LLM agent, not human review?**
+Chunk boundary validation is a structural judgment (is this a complete
+deontic proposition?), not a classification judgment (what domain is this
+provision in?). LLM agents can reliably evaluate structural completeness.
+Human reviewers are the right resource for annotation decisions where
+domain expertise and judgment about constitutional doctrine are required.
+Misapplying human review to structural decisions is an expensive error.
+
+**Implementation:** A new `chunk-resolve` CLI command, parallel in
+structure to `chunk-normalize`. Runs after `chunk-normalize`. Design the
+deterministic merge pass against actual flagged provisions in the DB before
+writing any code. Same sequencing discipline as Session 7.
+
+---
+
+### Decision: Corpus Expansion — Ingest Everything
+
+**Decision:** Full Federal Register PRESDOCU back catalog and full
+Congressional USLM back catalog. No artificial scope limit.
+
+**Why everything?**
+- The major policy domains Persona 1 arrives with (immigration, healthcare,
+  taxation, education, firearms) need meaningful result sets. A 120-document
+  corpus returning 8 results for a real query is not a product. Full
+  coverage is what makes search actually useful.
+- Full back catalog makes the temporal chain meaningful — legal address
+  evolution across administrations becomes queryable with real data.
+- Full coverage is what makes RAG and agent use cases qualitatively
+  valuable for Persona 2, not just incrementally better.
+- Both sources are already wired. This is a scale operation on existing
+  infrastructure, not new build work.
+- API rate limits are an engineering throttle, not a scope constraint.
+- Storage cost is negligible (established Session 4).
+
+**Sequencing:** After chunk-resolve is proven stable at 120 documents.
+Stress test at ~500 documents before full scale. This surfaces extractor
+edge cases that did not appear at 120 documents.
+
+---
+
+### Decision: User Journey Before Technology
+
+**Decision:** Feature and user journey design precedes technology selection
+in all future sessions. Technology serves the user experience, not the
+reverse.
+
+**Why record this as an explicit decision?**
+Session 8 began with technology considerations (web framework, hosting,
+frontend architecture) before the user personas and journeys were defined.
+This ordering produced analysis that could not be grounded in product
+requirements. The correct order is: personas → journeys → features →
+technology. This standing rule makes the correct order explicit and
+prevents recurrence.
+
+**Implication for Session 9:** Technology decisions are on the agenda but
+are preceded by Persona 1 user journey mapping. Technology is selected
+against the concrete journey, not in the abstract.

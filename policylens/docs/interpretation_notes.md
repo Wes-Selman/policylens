@@ -87,7 +87,7 @@ is likely to generate the most notable examples.)*
 
 **2026-06-07 — The preamble/boilerplate/provision trichotomy**
 
-Users in Mode A (document reading) will encounter three types of text that
+Users in the document reading view will encounter three types of text that
 look similar on the surface but are treated differently by the system:
 
 Preamble ("By the authority vested in me as President by the Constitution
@@ -103,9 +103,10 @@ or in equity by any party against the United States..."): This IS deontic
 content — it's an immunity clause. It limits what legal claims can be made
 based on the order. PolicyLens stores it as a provision record but tags it
 as boilerplate and classifies it domain:governmental_structure. It's visible
-in Mode A but excluded from ideological scoring. Users should understand this
-text as real legal content that just happens to be formulaic — it appears in
-nearly every executive order in identical or near-identical form.
+in the document reading view but excluded from ideological scoring. Users
+should understand this text as real legal content that just happens to be
+formulaic — it appears in nearly every executive order in identical or
+near-identical form.
 
 Substantive provisions: Everything else. These are the operative directives
 that assign actual duties, permissions, and powers. These are what get scored
@@ -150,7 +151,8 @@ will want to understand the methodology in depth — the DW-NOMINATE
 borrowings, the CMP differences, the independence assumption, the IRR
 protocol. These feed a methodology appendix, not the main user guide.)*
 
-**2026-06-07 — Bare noun phrase list items: technically extracted, semantically incomplete**
+**2026-06-07 — Bare noun phrase list items: technically extracted,
+semantically incomplete; resolved by deterministic merge in Phase 2**
 
 During corpus inspection of extracted_units (Session 5), the deepest USLM
 nesting (depth 6) produced units like this:
@@ -167,27 +169,66 @@ something like "the following agencies shall comply with X: ... (AA) the
 Defense Intelligence Agency."
 
 **Why this matters for users:**
-A user reading this provision in Mode A would see "the Defense Intelligence
-Agency;" with no context and no idea what it means. This is a failure of
-the reading experience even if it is not a failure of extraction logic.
+A user reading this provision would see "the Defense Intelligence Agency;"
+with no context and no idea what it means. This is a failure of the reading
+experience even if it is not a failure of extraction logic.
 
-**What the normalizer should do:**
-Flag these with chunk_flag = 'review_boundary'. A bare noun phrase (no
-finite verb, no modality marker) is a strong signal that the unit is a
-list item fragment rather than a self-contained provision. The human
-reviewer queue should surface these prominently.
+**How the system resolves this (Phase 2 — chunk-resolve):**
+The normalizer flags these with chunk_flag = 'review_boundary'. In Phase 2,
+the chunk-resolve pipeline stage applies a deterministic merge: walk up
+section_path until a unit with a finite verb and modality is found, then
+attach the fragment as a list item under that parent. The USLM nesting
+structure makes this traversal unambiguous. After chunk-resolve, these
+fragments appear as part of their parent provision rather than as isolated
+cards.
 
 **What training docs should explain:**
-Some provisions in deeply nested legislation are intentionally fragmentary —
-they are list items that only make sense when read with their parent. Mode A
-must display these with sufficient parent context (at minimum the section
-heading and the immediate parent provision text) so the fragment is
-interpretable. A provision card that shows only "the Defense Intelligence
-Agency;" with no parent context is not useful to anyone.
+In deeply nested legislation, some list items only make sense when read with
+their parent provision. PolicyLens resolves this automatically via the
+chunk-resolve stage, but users looking at the raw corpus (e.g. via API)
+before chunk-resolve has run may encounter fragments with chunk_flag =
+'review_boundary'. These are accurately flagged — they are not ready for
+display or analysis until resolved.
 
-**Normalizer heuristic candidate (for Session 6):**
-A unit is likely a bare list-item fragment if: (a) its raw_text contains
-no finite verb, OR (b) its raw_text is under ~15 words and matches the
-pattern of a noun phrase ending in a semicolon or comma. Flag as
-review_boundary. Do not auto-merge — the parent structure needs human
-confirmation.
+**Methodology note:**
+The chunk-resolve deterministic merge is a structural operation, not an
+editorial one. The system is not interpreting the meaning of the provision —
+it is reconstructing the complete deontic proposition that the drafting
+convention (USLM list enumeration) distributed across multiple XML nodes.
+The merged provision is what the drafter wrote; the fragment was an artifact
+of how the XML was structured, not a separate legal statement.
+
+---
+
+## On Editorial Neutrality
+
+**2026-06-13 — Why PolicyLens does not editorialize and why that matters
+to users**
+
+PolicyLens shows what the law says. It does not tell users what to think
+about it. This is a deliberate product decision, not a limitation.
+
+The editorial neutrality principle means:
+- Party alignment is derived from the text after analysis, never used as
+  an input label during processing
+- Provisions are scored on liberty axes anchored to constitutional baselines,
+  not on whether they are "good" or "bad" for any group
+- The source link to the government document is always present — users can
+  verify every provision against the original
+
+For Persona 1 (the overwhelmed citizen), this is the entire reason to trust
+PolicyLens. Every other source of political information has an editorial
+stance. PolicyLens's stance is: here is what the law actually says.
+
+For Persona 3 (researchers and journalists), this is what makes the
+methodology citeable. A study that references PolicyLens provision scores
+needs to be able to explain that those scores are anchored to constitutional
+baselines and derived from text, not assigned by editors with a point of view.
+
+**User-facing implication:**
+The methodology page is load-bearing for both these personas. It is not
+marketing copy. It should explain the Hohfeldian framework, the constitutional
+baseline choices and their rationale, the scoring geometry, and the
+annotation validation protocol at a level of rigor that a policy researcher
+would find credible. See decisions_log.md for the full rationale on each
+of these choices.

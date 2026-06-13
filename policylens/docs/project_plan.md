@@ -1,18 +1,23 @@
 # project_plan.md
 # PolicyLens — Project Plan
-# Last updated: Session 7
+# Last updated: Session 8
 
 ---
 
 ## Vision
 
-A fully functional front-end that allows users to search, browse, and
-interact with legislative and regulatory text chunked to the provision
-level — where each provision is the minimal deontic unit (one subject,
-one modality, one object). In later phases, provisions are labeled with
-ideological scores and visualized on a two-axis liberty space, enabling
-substantive analysis of how legislation positions itself across economic
-and social liberty dimensions.
+A civic intelligence platform that gives every person direct access to
+what the law actually says — at the provision level, without editorial
+interpretation. The foundation is a corpus of federal legislative and
+regulatory text parsed into atomic deontic provisions (one subject, one
+modality, one object), stored with structural metadata, and made available
+through a clean API and a trustworthy reading interface.
+
+In later phases, provisions are labeled with ideological scores and
+visualized on a two-axis liberty space, enabling substantive analysis of
+how legislation positions itself across economic and social liberty
+dimensions. Party alignment is derived from clustering output — never
+used as a training label.
 
 The provision-level foundation is designed to support civic accountability
 features beyond document browsing, including: ideological profiling of
@@ -21,16 +26,7 @@ and voted for (not their stated positions); comparison of stated positions
 against legislative action ("says vs. does"); and constituent engagement
 tools that pre-load specific provisions and vote records as evidence for
 contacting a representative. These features are sequenced after the core
-annotation pipeline is stable and depend on legislator data joins whose
-feasibility has not yet been validated.
-
-A further potential direction — not yet scoped — is a public record of
-constituent support or dissension at the provision level, giving citizens
-a way to signal alignment with or opposition to specific legal statements.
-The integrity challenges of such a feature (fraud prevention, identity
-verification) are significant and would need to be resolved before
-implementation. This is noted here to preserve the option without
-committing to it.
+annotation pipeline is stable.
 
 Note on normative scoring: PolicyLens scores provisions on liberty axes
 anchored to constitutional baselines. This is not an editorial judgment
@@ -40,10 +36,58 @@ Features that would require PolicyLens to evaluate whether legislation
 is beneficial for specific populations are out of scope — that judgment
 belongs to users, informed by the evidence the system surfaces.
 
-Users can navigate three modes:
-- Mode A: Read a document as provisions, hierarchy preserved
-- Mode B: Search across documents by concept or structured filter
-- Mode C: Traverse a legal address across time (point-in-time state)
+---
+
+## Personas (defined Session 8)
+
+**Persona 1 — The Overwhelmed Citizen**
+Somewhere in the middle politically. Finds all available information
+overwhelming. Wants a source of truth without bias. Does not do deep
+research but wants to trust that someone has. Core problem is trust, not
+access. Arrives with a vague topic after seeing something in the news,
+has maybe 5 minutes. The editorial neutrality of PolicyLens is the entire
+reason they would use it over anything else. Journey is pull, not push.
+
+**Persona 2 — The Data Builder**
+Builds on top of the corpus programmatically. Use cases include training
+models, building prediction markets, simulating policy scenarios, joining
+with external data, gamifying politics, building polls, automating social
+content, powering policy newsletters, and constituent engagement tools.
+Does not need a UI — needs reliable schema, stable identifiers, good
+coverage, and terms of use that permit building on top. The API is their
+entry point. The provision ID format, context_text field, and Hohfeldian
+structure are the product for them.
+
+**Persona 3 — The Researcher / Journalist**
+Formal consumption. Tracks trends over time, informs studies, needs
+citeable sources. Needs to trust the methodology, not just the output.
+Uses both the UI and the API. Needs methodology disclosure rigorous enough
+to reference in a footnote or a published study.
+
+**Key relationship:** Persona 1 is an end user of what Persona 2 could
+build on top of PolicyLens. PolicyLens building the Persona 1 UI directly
+does not create debt for Persona 2 — as long as the API is the contract
+and the UI is a consumer of it. The UI is also proof that the API works.
+
+---
+
+## Architectural principle: API-first (decided Session 8)
+
+PolicyLens is a product, not purely a platform — but built API-first so
+the UI is the first client of the API, not the other way around.
+
+The API is the contract. The UI is a consumer of it. No UI decision drives
+the data model. This means:
+- Persona 2 builders can integrate against the API without being affected
+  by UI changes.
+- The reading experience can be redesigned, replaced, or extended without
+  touching the corpus, the schema, or the provision identifiers.
+- The Persona 1 UI is the proof that the API works, and provides the
+  tangibility signal useful for early product development and attracting
+  builders.
+
+Technology decisions follow from user journey requirements. User journeys
+are designed before technology is selected.
 
 ---
 
@@ -70,14 +114,14 @@ Artifacts:
 - controlled_vocabulary.yaml
 - baseline_doctrine.yaml
 - decisions_log.md (rationale layer)
-- Session handoff documents (Sessions 0–7)
+- Session handoff documents (Sessions 0–8)
 
 ---
 
 ## Phase 1 — Chunk & Store ✅ Complete (Session 7)
 
-**Goal:** Extract all provisions from the 120-document corpus, store them
-with structural metadata, and surface ambiguous chunk boundaries for review.
+**Goal:** Extract all provisions from the seed corpus, store them with
+structural metadata, and surface ambiguous chunk boundaries for review.
 
 ### Architecture
 
@@ -101,21 +145,6 @@ Source-agnostic normalizer reads extracted_units, applies atomicity
 heuristics, detects nested conditionals, constructs context_text, assigns
 chunk_flag, detects inline citations, refines jurisdiction, and writes
 provision records. Also writes to legal_addresses and provision_references.
-
-Normalizer decisions:
-- element_type overrides: provision_candidate → boilerplate (General
-  Provisions formulaic language); provision_candidate → header (definition
-  block intros)
-- Boilerplate child inheritance: child units of a boilerplate parent
-  inherit the boilerplate classification
-- chunk_flag priority: review_nested_conditional > review_cross_reference
-  > review_boundary > clean
-- Inline citation detection: both short form (N U.S.C.) and long form
-  (section N of title N, United States Code)
-- context_text: section_heading when available; section_path label as
-  fallback for FR documents
-- jurisdiction refinement: involves_states → preempts_state |
-  defers_to_state | creates_floor via keyword heuristics
 
 ### Database tables added in Phase 1
 
@@ -153,56 +182,135 @@ doc_status enum extended: raw → extracted → transformed → classified → e
 - ✅ Chunking report reviewed; edge case distribution understood
 - ✅ All pipeline stages idempotent (verified by re-running on 5 documents)
 - ✅ decisions_log.md updated through Session 7
-- ⬜ migrate_session7_jurisdiction_backfill.sql committed to repo
-  (documents the one-time backfill applied in Session 7; carry-forward
-  to Session 8)
+- ✅ migrate_session7_jurisdiction_backfill.sql committed (Session 9)
 
 ---
 
-## Phase 2 — Front-End: Browse & Search
+## Phase 2 — Pipeline Hardening + Corpus Expansion + Lightweight UI
 
-**Goal:** A working interface that lets users navigate the chunked corpus,
-read provision text in context, and search by keyword or structural filter.
+**Goal:** Make the existing corpus trustworthy, expand it to meaningful
+coverage, and ship a lightweight reading experience that proves the API
+works and gives Persona 1 something real to use.
 
-**Gate:** Requires dedicated security/legal scoping session before this
-phase begins. Scope: user data storage, API terms of use (Congress.gov,
-Federal Register), advertising data flows, threat model for a civic tech
-tool that scores legislation ideologically.
+**Framing:** Phase 2 has three parallel workstreams with a clear dependency
+order. The UI does not ship to real users until 2a is complete and 2b has
+meaningful topic coverage. All three workstreams are built in parallel;
+the dependency is on launch, not on build.
 
-**Phase decomposition required:** "Phase 2" contains multiple distinct
-product surfaces that likely belong in separate phases:
-- Mode A (document browser) — read-only, no annotation required, ships early
-- Mode B (search) — requires pgvector and embedding pipeline
-- Mode C (temporal traversal) — requires temporal chain populated
-- Ideological visualization — requires Phase 3 annotation coverage
-- Legislator profiling / says-vs-does — requires legislator data joins
-  (feasibility not yet validated)
+### Workstream 2a — chunk-resolve pipeline stage
 
-The scoping session assigns sub-phase numbers and sequences these explicitly.
+**The problem:** 469 of 943 provisions (50%) carry chunk_flag ≠ 'clean'.
+The normalizer flagged these correctly — the machinery worked as designed.
+But an unresolved flag queue means the corpus is not yet trustworthy enough
+to be the source of truth that Persona 1's value proposition requires.
 
-Features (pending scoping):
-- Mode A: Provision browser — navigate by document → section → provision;
-  section headings visible; document title persistent in header
-- Full-text search across provision text (existing tsvector on documents;
-  add tsvector on provisions.text)
-- Structural filters: document type, section, chunk_flag status, element_type
-- Provision card display: text, section_heading, document title, doc type,
-  date, source link (deep link via url + section_id)
-- Document-level view: all provisions in reading order, section hierarchy
-  preserved
-- Flagged provision queue: reviewers can see and resolve chunk_flag items
-- Boilerplate provisions visible in document view but visually distinguished;
-  excluded from search results by default (toggle available)
+**Resolution strategy — deterministic first, LLM agent on residual:**
 
-Success criteria:
-- All stored provisions browsable and searchable
-- Chunk_flag queue functional; reviewers can mark flags resolved
-- Source deep links functional for all provision types
-- No annotation fields visible in UI yet
+Layer 1 — Deterministic fixes (implemented as a new `chunk-resolve`
+pipeline stage, runs after `chunk-normalize`):
+
+  Em-dash stubs (review_boundary): The USLM XML structure is known. The
+  stub always has child nodes containing the operative content. Deterministic
+  merger: concatenate the stub with its immediate children in order.
+  Structural fix, no model needed.
+
+  Bare noun phrase fragments (review_boundary): Walk up section_path until
+  a unit with a finite verb and modality is found. Attach fragment as a
+  list item under that parent. USLM nesting makes this traversal
+  well-defined. Structural fix, no model needed.
+
+  Inline cross-references (review_cross_reference): These are not chunking
+  problems — the provision text is correctly bounded. Resolution is
+  reference extraction: parse the USC citation, upsert to legal_addresses,
+  insert provision_references junction record. Flag clears when reference
+  is resolved. Deterministic extraction task.
+
+Layer 2 — LLM agent pass: Whatever remains genuinely ambiguous after
+deterministic fixes is the correct input for an LLM agent review pass.
+This residual set is expected to be small. This is chunk boundary
+validation, not annotation work (Phase 3).
+
+**Output:** Corpus where chunk_flag='clean' is genuinely earned.
+
+**Implementation note:** Design the deterministic merge pass before writing
+any code. Inspect the actual flagged provisions in the DB to confirm merge
+heuristics are correct before implementing. Empirical grounding first —
+same sequencing discipline as the Session 7 atomicity heuristic.
+
+**doc_status:** A new status value `resolved` may be needed between
+`transformed` and `classified` to distinguish provisions that have passed
+the chunk-resolve stage. Decide at implementation time.
+
+### Workstream 2b — Corpus expansion
+
+**Decision: ingest everything.**
+
+Full Federal Register PRESDOCU back catalog (all executive orders, notices,
+proclamations, determinations going back decades) and full Congressional
+USLM back catalog (all bills and resolutions from the 93rd Congress onward).
+Both sources are already wired. No new extractors required.
+
+**Rationale:**
+- API rate limits are an engineering throttle, not a scope constraint.
+- Storage cost is negligible.
+- Full back catalog makes the temporal chain meaningful — legal address
+  evolution across administrations becomes queryable.
+- Full coverage is what makes RAG and agent use cases genuinely valuable.
+  context_text was designed for embedding stability; no rethinking needed.
+- The major policy domains Persona 1 arrives with (immigration, healthcare,
+  taxation, education, firearms) need meaningful result sets before the
+  UI is useful. Full coverage achieves this.
+
+**Sequencing constraint:** Run after chunk-resolve is proven stable at the
+120-document scale. Stress test at ~500 documents before opening the
+throttle to the full back catalog. This surfaces extractor edge cases
+that did not appear at 120 documents before they multiply.
+
+### Workstream 2c — Lightweight UI
+
+A search and provision reading experience. Built as a clean consumer of
+the API — no UI decision drives the data model. Can be built in parallel
+with 2a and 2b but does not ship to real users until 2a is complete and
+2b has meaningful topic coverage in the major policy domains.
+
+**Launch threshold:** Not a document count. Coverage of the major policy
+domains Persona 1 arrives with: immigration, healthcare, taxation,
+education, firearms. Search on any of those topics must return a
+meaningful, trustworthy result set.
+
+**UI design principles:**
+- Editorial neutrality is the trust signal. No commentary, no spin.
+  Direct provision text with source links to the government document.
+- The absence of provisions (proclamations, ceremonial resolutions) is
+  displayed transparently as informative, not as a failure state.
+- Boilerplate provisions are visible in document reading view but visually
+  distinguished; excluded from search results by default.
+- Methodology disclosure is load-bearing for Persona 1 trust and Persona 3
+  citability. A public methodology page is required at launch.
+
+**Technology decisions:** Resolved in Session 9, after Persona 1 user
+journey is mapped. Technology serves the user experience, not the reverse.
+
+**Prerequisites before Phase 2c ships:**
+- db/__init__.py singleton refactor: replace global pool with explicit
+  create_pool(dsn) factory (flagged Session 5; required for web tier
+  concurrency)
+- Security and legal review: API terms of use (Congress.gov, Federal
+  Register), user data storage, advertising data flows, threat model
+- User journey mapping for Persona 1 (Session 9 agenda item 1)
+
+**Success criteria for Phase 2:**
+- All provisions at chunk_flag='clean' after chunk-resolve pass
+- Full Federal Register PRESDOCU and Congressional USLM back catalogs
+  ingested and normalized
+- Major policy domain topic coverage confirmed via search result sampling
+- Lightweight UI live with search and provision reading experience
+- API documented and accessible to Persona 2 builders
+- Methodology page live
 
 ---
 
-## Phase 3 — Annotation
+## Phase 3 — Annotation Pipeline
 
 **Goal:** Populate the normative and scoring fields on all provision records
 using a model-primary pipeline with stratified human sample checking.
@@ -235,14 +343,31 @@ Success criteria:
 
 ---
 
-## Phase 4 — Front-End: Search, Filter & Interact
+## Phase 4 — Semantic Search
 
-**Goal:** Extend the front-end with annotation-aware search, filtering,
-and visualization. Implements Modes B and C fully.
+**Goal:** Add vector search on context_text embeddings. Significant
+infrastructure addition — its own phase.
+
+Tasks:
+- Install pgvector extension
+- Select embedding model
+- Run embedding job on context_text for all provisions
+- Implement vector similarity search endpoint
+- Surface semantic search in UI
+
+**Note:** context_text was designed for embedding stability from the start.
+No schema changes required. Expanding the corpus in Phase 2 does not
+require rethinking the embedding strategy — context_text is already
+designed for it.
+
+---
+
+## Phase 5 — Annotation-Aware Filtering + Ideological Visualization
+
+**Goal:** Extend the UI with annotation-aware search, filtering, and the
+2D liberty-space visualization. Requires Phase 3 complete.
 
 Features:
-- Mode B: Semantic search using vector embeddings on context_text;
-  each result card shows text + section_heading + doc title + doc type + date
 - Filter by annotation fields: domain, valence range, subject_type, modality
 - Provision detail view: all annotation fields, baseline_statement,
   cross-rules cited; provision_references displayed as linked legal addresses
@@ -254,16 +379,14 @@ Features:
 - Pending provision indicator: excluded from visualization with count shown
 
 Success criteria:
-- Semantic search functional on context_text embeddings
 - All annotation fields searchable and filterable
 - 2D visualization correct for single-axis and mixed provisions
-- Mode C (temporal traversal) functional for legal addresses with multiple
-  provision versions
+- Mode C functional for legal addresses with multiple provision versions
 - Pending exclusion count visible in all visualization views
 
 ---
 
-## Phase 5 — Clustering & Analysis
+## Phase 6 — Clustering and Analysis
 
 **Goal:** Run the clustering pipeline, validate against party alignment,
 and produce exportable analysis outputs.
@@ -287,15 +410,24 @@ Success criteria:
 
 ## Deferred (No Phase Assigned Yet)
 
+- Temporal traversal (Mode C display) — opportunistic; populate
+  effective_date / superseded_by as data allows; surface in UI when
+  chains exist; not its own phase
+- Legislator profiling / says-vs-does — House roll call votes available
+  via Congress.gov API beta (118th Congress onward); Senate requires
+  separate source; sequence after Phase 3; House-only at launch acceptable;
+  feasibility partially validated Session 8
+- State legislative ingestion (LegiScan/OpenStates) — separate source
+  family, separate baseline_doctrine supplement, separate scoping session;
+  jurisdiction field is forward-compatible
 - Four Hohfeldian correlatives: disability, liability, no_right, right_claim
+  — second annotation pass, derivable from primary set
 - Graph promotion: typed metadata fields → graph edges (legal_addresses
   and provision_references tables already structured for this)
 - Versioning and re-tagging strategy at scale (Dobbs-class doctrine shifts)
 - Post-pilot adjudication model for full corpus scale-up
 - k-means parameter selection
 - Clustering sensitivity analysis (mixed-provision centroid distortion)
-- Refactor db/__init__.py: replace global pool singleton with explicit
-  create_pool(dsn) factory (flagged Session 5; needed before Phase 2)
-- State legislative ingestion (LegiScan/OpenStates) — separate source
-  family, separate baseline_doctrine supplement, separate scoping session;
-  jurisdiction field is forward-compatible
+- Constituent support / dissension at provision level — integrity challenges
+  (fraud prevention, identity verification) significant; noted to preserve
+  the option without committing
